@@ -1,0 +1,43 @@
+<div class="doc-title">كشف حساب عميل</div>
+
+<div class="info-box" style="margin-bottom: 20px;">
+  <h4>بيانات العميل</h4>
+  <p><strong>الاسم:</strong> {{statement.customer.name}}</p>
+  {{#if statement.customer.phone}}<p><strong>الهاتف:</strong> {{statement.customer.phone}}</p>{{/if}}
+  {{#if statement.customer.email}}<p><strong>البريد:</strong> {{statement.customer.email}}</p>{{/if}}
+  <p><strong>كما في تاريخ:</strong> {{statement.as_of}}</p>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>رقم الفاتورة</th>
+      <th>التاريخ</th>
+      <th>الإجمالي</th>
+      <th>المدفوع</th>
+      <th>المتبقي</th>
+      <th>الحالة</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{#each statement.invoices}}
+    <tr>
+      <td>{{invoice_number}}</td>
+      <td>{{formatDate invoice_date}}</td>
+      <td>{{formatMoney total}}</td>
+      <td>{{formatMoney paid_amount}}</td>
+      <td>{{formatMoney (subtract total paid_amount)}}</td>
+      <td>{{status}}</td>
+    </tr>
+    {{/each}}
+  </tbody>
+</table>
+
+<div class="totals">
+  <table>
+    <tr class="grand-total">
+      <td>إجمالي المستحق:</td>
+      <td>{{formatMoney statement.outstanding}}</td>
+    </tr>
+  </table>
+</div>

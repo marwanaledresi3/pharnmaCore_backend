@@ -1,0 +1,50 @@
+# Node modules
+node_modules/
+
+# Environment files
+.env
+
+# Build output
+dist/
+build/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS/Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Custom ignored files
+node_modules/
+.env
+.env.*
+!.env.example
+
+dist/
+build/
+
+.vscode/
+.idea/
+
+*.log
+project-structure.txt
+test.js
+structure.txt
+app/uploads.zip
+v1
+AdminDashboardService.js
+OrganizationLinkAdminService.js
+OrganizationAdminService.js
+adminAuditAndLinkRoutes.js
+adminDashboardRoutes.js
+AdminDashboardController.js
+adminManagementRoutes.js
+AuditLogAdminController.ja
+OrganizationAdminController.js
+OrganizationLinkAdminController.js
+UserAdminController.js
+

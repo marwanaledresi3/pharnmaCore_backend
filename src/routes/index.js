@@ -1,0 +1,25 @@
+const router = require('express').Router();
+
+router.use('/auth',            require('./authRoutes'));
+router.use('/users',           require('./userRoutes'));
+router.use('/roles',           require('./roleRoutes'));
+router.use('/companies',       require('./companyRoutes'));
+router.use('/accounts',        require('./accountRoutes'));
+router.use('/journal-entries', require('./journalEntryRoutes'));
+router.use('/products',        require('./productRoutes'));
+router.use('/warehouses',      require('./warehouseRoutes'));
+router.use('/customers',       require('./customerRoutes'));
+router.use('/batches',         require('./batchRoutes'));
+router.use('/sales-orders',    require('./salesOrderRoutes'));
+router.use('/invoices', require('./invoiceRoutes'));
+router.use('/payments', require('./paymentRoutes'));
+router.use('/suppliers', require('./supplierRoutes'));
+router.use('/purchase-orders', require('./purchaseOrderRoutes'));
+router.use('/reports', require('./reportRoutes'));
+router.use('/currencies', require('./currencyRoutes'));
+router.use('/exchange-rates', require('./exchangeRateRoutes'));
+router.use('/notifications', require('./notificationRoutes'));
+router.use('/portal', require('./portalRoutes'));
+router.use('/returns', require('./returnRoutes'));
+router.use('/pdf', require('./pdfRoutes'));
+module.exports = router;

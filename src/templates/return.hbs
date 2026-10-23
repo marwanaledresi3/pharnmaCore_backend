@@ -1,0 +1,57 @@
+<div class="doc-title">مرتجع {{#if (eq ret.return_type "sale")}}بيع{{else}}شراء{{/if}}</div>
+
+<div class="info-grid">
+  <div class="info-box">
+    <h4>بيانات المرتجع</h4>
+    <p><strong>رقم المرتجع:</strong> {{ret.return_number}}</p>
+    <p><strong>التاريخ:</strong> {{formatDate ret.return_date}}</p>
+    <p><strong>الفاتورة الأصلية:</strong> {{ret.invoice_number}}</p>
+    {{#if ret.reason}}<p><strong>السبب:</strong> {{ret.reason}}</p>{{/if}}
+  </div>
+  <div class="info-box">
+    <h4>الطرف</h4>
+    <p><strong>الاسم:</strong> {{ret.party_name}}</p>
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>المنتج</th>
+      <th>الكمية</th>
+      <th>السعر</th>
+      <th>الضريبة</th>
+      <th>الإجمالي</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{#each ret.items}}
+    <tr>
+      <td>{{@index}}</td>
+      <td>{{product_name}}</td>
+      <td>{{quantity}}</td>
+      <td>{{formatMoney unit_price}}</td>
+      <td>{{formatMoney tax_amount}}</td>
+      <td>{{formatMoney line_total}}</td>
+    </tr>
+    {{/each}}
+  </tbody>
+</table>
+
+<div class="totals">
+  <table>
+    <tr>
+      <td>المجموع:</td>
+      <td>{{formatMoney ret.subtotal}}</td>
+    </tr>
+    <tr>
+      <td>الضريبة:</td>
+      <td>{{formatMoney ret.tax_total}}</td>
+    </tr>
+    <tr class="grand-total">
+      <td>الإجمالي:</td>
+      <td>{{formatMoney ret.total}} {{ret.currency_code}}</td>
+    </tr>
+  </table>
+</div>

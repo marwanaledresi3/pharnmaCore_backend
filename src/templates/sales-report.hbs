@@ -1,0 +1,59 @@
+<div class="doc-title">تقرير المبيعات</div>
+
+<div class="info-grid">
+  <div class="info-box">
+    <h4>الفترة</h4>
+    <p>من: {{formatDate report.period.date_from}}</p>
+    <p>إلى: {{formatDate report.period.date_to}}</p>
+  </div>
+  <div class="info-box">
+    <h4>الملخص</h4>
+    <p><strong>عدد الفواتير:</strong> {{report.totals.invoices_count}}</p>
+    <p><strong>الإجمالي:</strong> {{formatMoney report.totals.total_sales}}</p>
+    <p><strong>المدفوع:</strong> {{formatMoney report.totals.total_paid}}</p>
+  </div>
+</div>
+
+<h4 style="font-size: 13px; margin: 15px 0 8px;">المبيعات حسب الفترة</h4>
+<table>
+  <thead>
+    <tr>
+      <th>الفترة</th>
+      <th>عدد الفواتير</th>
+      <th>إجمالي المبيعات</th>
+      <th>المدفوع</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{#each report.by_date}}
+    <tr>
+      <td>{{formatDate period}}</td>
+      <td>{{invoices_count}}</td>
+      <td>{{formatMoney total_sales}}</td>
+      <td>{{formatMoney total_paid}}</td>
+    </tr>
+    {{/each}}
+  </tbody>
+</table>
+
+{{#if report.by_customer.length}}
+<h4 style="font-size: 13px; margin: 15px 0 8px;">أفضل العملاء</h4>
+<table>
+  <thead>
+    <tr>
+      <th>العميل</th>
+      <th>عدد الفواتير</th>
+      <th>الإجمالي</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{#each report.by_customer}}
+    <tr>
+      <td>{{name}}</td>
+      <td>{{invoices_count}}</td>
+      <td>{{formatMoney total}}</td>
+    </tr>
+    {{/each}}
+  </tbody>
+</table>
+{{/if}}

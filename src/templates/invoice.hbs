@@ -1,0 +1,97 @@
+{{#> layout}}
+<div class="doc-title">فاتورة {{#if (eq invoice.invoice_type "sale")}}بيع{{else}}شراء{{/if}}</div>
+
+<div class="info-grid">
+  <div class="info-box">
+    <h4>بيانات الفاتورة</h4>
+    <p><strong>رقم الفاتورة:</strong> {{invoice.invoice_number}}</p>
+    <p><strong>التاريخ:</strong> {{formatDate invoice.invoice_date}}</p>
+    <p><strong>تاريخ الاستحقاق:</strong> {{formatDate invoice.due_date}}</p>
+    <p>
+      <strong>الحالة:</strong>
+      <span class="badge {{invoice.status}}">
+        {{#if (eq invoice.status "paid")}}مدفوعة{{/if}}
+        {{#if (eq invoice.status "unpaid")}}غير مدفوعة{{/if}}
+        {{#if (eq invoice.status "partial")}}مدفوعة جزئياً{{/if}}
+        {{#if (eq invoice.status "cancelled")}}ملغاة{{/if}}
+      </span>
+    </p>
+  </div>
+  <div class="info-box">
+    <h4>{{#if (eq invoice.invoice_type "sale")}}العميل{{else}}المورد{{/if}}</h4>
+    <p><strong>الاسم:</strong> {{invoice.party_name}}</p>
+    {{#if invoice.customer_phone}}<p><strong>الهاتف:</strong> {{invoice.customer_phone}}</p>{{/if}}
+    {{#if invoice.customer_email}}<p><strong>البريد:</strong> {{invoice.customer_email}}</p>{{/if}}
+    {{#if invoice.customer_address}}<p><strong>العنوان:</strong> {{invoice.customer_address}}</p>{{/if}}
+    {{#if invoice.customer_tax_number}}<p><strong>الرقم الضريبي:</strong> {{invoice.customer_tax_number}}</p>{{/if}}
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>المنتج</th>
+      <th>الكمية</th>
+      <th>السعر</th>
+      <th>الضريبة</th>
+      <th>الإجمالي</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{#each invoice.items}}
+    <tr>
+      <td>{{@index}}</td>
+      <td>{{product_name}}</td>
+      <td>{{quantity}}</td>
+      <td>{{formatMoney unit_price}}</td>
+      <td>{{formatMoney tax_amount}}</td>
+      <td>{{formatMoney line_total}}</td>
+    </tr>
+    {{/each}}
+  </tbody>
+</table>
+
+<div class="totals">
+  <table>
+    <tr>
+      <td>المجموع:</td>
+      <td>{{formatMoney invoice.total}}</td>
+    </tr>
+    <tr>
+      <td>المدفوع:</td>
+      <td>{{formatMoney invoice.paid_amount}}</td>
+    </tr>
+    <tr class="grand-total">
+      <td>المتبقي:</td>
+      <td>{{formatMoney invoice.balance}} {{invoice.currency_code}}</td>
+    </tr>
+  </table>
+</div>
+
+{{#if invoice.payments.length}}
+<div style="margin-top: 20px;">
+  <h4 style="font-size: 13px; margin-bottom: 8px;">الدفعات</h4>
+  <table>
+    <thead>
+      <tr>
+        <th>التاريخ</th>
+        <th>المبلغ</th>
+        <th>الطريقة</th>
+        <th>المرجع</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{#each invoice.payments}}
+      <tr>
+        <td>{{formatDate payment_date}}</td>
+        <td>{{formatMoney amount}}</td>
+        <td>{{method}}</td>
+        <td>{{reference}}</td>
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+</div>
+{{/if}}
+{{/layout}}
