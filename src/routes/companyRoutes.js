@@ -8,6 +8,13 @@ router.use(authenticate, requireCompany);
 
 router.get('/current', authorize('companies.view'), ctrl.getCurrent);
 
+// مسار جلب جميع الشركات والموردين معاً (لشاشة الشراء والطلب)
+router.get('/vendors', authorize('companies.view'), ctrl.getAllVendorsAndSuppliers);
+
+// مسار جلب الشركات فقط مع تفاصيل العملة
+router.get('/list', authorize('companies.view'), ctrl.getCompaniesOnly);
+
+
 router.patch('/current', authorize('companies.update'),
   [body('name').optional().trim().notEmpty(),
    body('email').optional({ nullable: true }).isEmail(),

@@ -49,23 +49,27 @@ const createReturn = async (companyId, userId, returnType, payload) => {
 
     for (const item of payload.items) {
       // ابحث عن السطر الأصلي في الفاتورة
-      const originalItem = await client.query(
-        `SELECT soi.*, p.name AS product_name
-         FROM ${returnType === 'sale' ? 'sales_order_items' : 'purchase_order_items'} soi
-         JOIN products p ON p.id = soi.product_id
-         WHERE soi.order_id = (
-           SELECT reference_id FROM invoices WHERE id = $1
-         ) AND soi.product_id = $2
-         LIMIT 1`,
+      const origItemRes = await client.query(
+        `SELECT * FROM ${returnType === 'sale' ? 'sales_order_items' : 'purchase_order_items'} 
+         WHERE order_id = (SELECT reference_id FROM invoices WHERE id = $1) AND product_id = $2 LIMIT 1`,
         [payload.invoice_id, item.product_id]
       );
+      const orig = origItemRes.rows[0];
+      
+      // نعتمد net_unit_price بدلاً من unit_price الخام لضمان عدالة المرتجعات بعد الخصم والبونص
+      const netUnitPrice = Number(orig.net_unit_price || orig.unit_price);
+      const qty = Number(item.quantity);
+      
+      const taxRate = Number(item.tax_rate ?? orig.tax_rate);
+      const lineSubtotal = qty * netUnitPrice;
+      const taxAmount = lineSubtotal * (taxRate / 100);
+      const lineTotal = lineSubtotal + taxAmount;
 
       if (!originalItem.rowCount) {
         throw new ApiError(400, `Product ${item.product_id} not found in original invoice`);
       }
 
-      const orig = originalItem.rows[0];
-      const qty = Number(item.quantity);
+      
       if (qty <= 0) throw new ApiError(400, 'Quantity must be > 0');
       if (qty > Number(orig.quantity)) {
         throw new ApiError(400, `Quantity cannot exceed original (${orig.quantity}) for ${orig.product_name}`);
@@ -89,10 +93,7 @@ const createReturn = async (companyId, userId, returnType, payload) => {
 
       // احسب المبالغ
       const unitPrice = Number(item.unit_price || orig.unit_price);
-      const taxRate = Number(item.tax_rate ?? orig.tax_rate);
-      const lineSubtotal = qty * unitPrice;
-      const taxAmount = lineSubtotal * (taxRate / 100);
-      const lineTotal = lineSubtotal + taxAmount;
+      
 
       subtotal += lineSubtotal;
       taxTotal += taxAmount;

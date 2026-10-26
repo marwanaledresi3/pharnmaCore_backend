@@ -30,15 +30,17 @@ router.post(
     body('name').trim().notEmpty().isLength({ max: 200 }),
     body('unit').trim().notEmpty().isLength({ max: 30 }),
     body('barcode').optional({ nullable: true }).trim(),
+    body('category').optional({ nullable: true }).trim().isLength({ max: 100 }),
+    body('cost_price').optional().isFloat({ min: 0 }),
+    body('selling_price').optional().isFloat({ min: 0 }),
+    body('profit_margin').optional().isFloat({ min: 0, max: 100 }),
     body('tax_rate_id').optional({ nullable: true }).isUUID(),
     body('revenue_account_id').optional({ nullable: true }).isUUID(),
     body('inventory_account_id').optional({ nullable: true }).isUUID(),
     body('cogs_account_id').optional({ nullable: true }).isUUID(),
     body('min_stock_level').optional().isFloat({ min: 0 }),
-  ],
-  validate,
-  ctrl.create
-);
+  ], validate, ctrl.create);
+
 
 router.patch(
   '/:id',

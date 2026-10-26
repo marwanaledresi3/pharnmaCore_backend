@@ -1,13 +1,13 @@
 const cron = require('node-cron');
 const {pool} = require('../config/pool');
-const scanner = require('../services/notificationScanner');
+const {scanAll} = require('../services/notificationScanner');
 
 /**
  * يفحص كل الشركات النشطة كل ساعة
  */
 const start = () => {
   // كل ساعة عند الدقيقة 0
-  cron.schedule('0 * * * *', async () => {
+  cron.schedule('28 * * * *', async () => {
     console.log('[notificationJob] Starting scan...');
     try {
       const companies = await pool.query(
@@ -15,7 +15,7 @@ const start = () => {
       );
       for (const c of companies.rows) {
         try {
-          const stats = await scanner.scanAll(c.id);
+          const stats = await scanAll(c.id);
           const total = Object.values(stats).reduce((a, b) => a + b, 0);
           if (total > 0) {
             console.log(`[notificationJob] Company ${c.id}: ${total} notifications`);

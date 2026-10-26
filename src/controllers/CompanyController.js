@@ -4,6 +4,26 @@ const Company = require('../models/Company');
 const Currency = require('../models/Currency');
 const {pool} = require('../config/pool');
 
+
+// جلب جميع الشركات والموردين معاً (القائمة المختلطة لشاشة الشراء)
+const getAllVendorsAndSuppliers = asyncHandler(async (req, res) => {
+  const vendors = await Company.findAllVendors();
+  res.json({ 
+    success: true, 
+    count: vendors.length, 
+    data: vendors 
+  });
+});
+
+// جلب الشركات فقط مع تفاصيل العملة
+const getCompaniesOnly = asyncHandler(async (req, res) => {
+  const companies = await Company.findAllCompanies();
+  res.json({ 
+    success: true, 
+    count: companies.length, 
+    data: companies 
+  });
+});
 const getCurrent = asyncHandler(async (req, res) => {
   const company = await Company.findById(req.user.company_id);
   if (!company) throw new ApiError(404, 'Company not found');
@@ -151,6 +171,8 @@ const createExternalUser = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+getAllVendorsAndSuppliers,
+getCompaniesOnly,
   getCurrent,
   updateCurrent,
   getSettings,

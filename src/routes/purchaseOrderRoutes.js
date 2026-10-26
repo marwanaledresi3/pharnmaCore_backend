@@ -20,8 +20,12 @@ router.post('/', authorize('purchase_orders.create'),
    body('order_date').optional().isISO8601(),
    body('items').isArray({ min: 1 }),
    body('items.*.product_id').isUUID(),
-   body('items.*.quantity').isFloat({ gt: 0 }),
+   body('items.*.quantity').optional().isFloat({ gt: 0 }),
+   body('items.*.paid_quantity').optional().isFloat({ gt: 0 }),     // الكمية المدفوعة الفعليّة
+   body('items.*.bonus_quantity').optional().isFloat({ min: 0 }),    // كمية البونص المجانية
    body('items.*.unit_price').isFloat({ min: 0 }),
+   body('items.*.discount_rate').optional().isFloat({ min: 0, max: 100 }),   // نسبة الخصم %
+   body('items.*.discount_amount').optional().isFloat({ min: 0 }), // قيمة الخصم النقدية
    body('items.*.tax_rate').optional().isFloat({ min: 0, max: 100 }),
    body('items.*.batch_number').optional().trim(),
    body('items.*.expiry_date').optional().isISO8601()],

@@ -1,6 +1,37 @@
 const {pool} = require('../config/pool');
 
 class Company {
+
+// دالة جلب الشركات مع الموردين (القائمة المختلطة)
+  static async findAllVendors() {
+    const r = await pool.query(
+      `SELECT id AS vendor_id, name, phone, address, 'registered' AS vendor_type
+       FROM companies
+       WHERE is_active = TRUE
+       UNION ALL
+       SELECT id AS vendor_id, name, phone, address, 'local' AS vendor_type
+       FROM suppliers
+       WHERE is_active = TRUE
+       ORDER BY name ASC`
+    );
+    return r.rows;
+  }
+
+  // دالة جلب الشركات فقط مع تفاصيل العملة
+  static async findAllCompanies() {
+    const r = await pool.query(
+      `SELECT c.id, c.name, c.currency_id, c.tax_number, c.address,
+              c.logo_url, c.is_active, c.created_at, c.updated_at,
+              c.email, c.phone, c.website, c.country, c.city,
+              cu.code, cu.symbol 
+       FROM companies c
+       LEFT JOIN currencies cu ON cu.id = c.currency_id
+       WHERE c.is_active = TRUE
+       ORDER BY c.name ASC`
+    );
+    return r.rows;
+  }
+
   static async findById(id) {
     const r = await pool.query(
       `SELECT c.id, c.name, c.currency_id, c.tax_number, c.address,

@@ -1,5 +1,9 @@
 const router = require('express').Router();
+const connectionRoutes = require('./connectionRoutes');
+const postRoutes = require('./postRoutes');
+const globalProductRoutes = require('./globalProductRoutes');
 
+router.use('/global-products', globalProductRoutes);
 router.use('/auth',            require('./authRoutes'));
 router.use('/users',           require('./userRoutes'));
 router.use('/roles',           require('./roleRoutes'));
@@ -22,4 +26,8 @@ router.use('/notifications', require('./notificationRoutes'));
 router.use('/portal', require('./portalRoutes'));
 router.use('/returns', require('./returnRoutes'));
 router.use('/pdf', require('./pdfRoutes'));
+router.use('/connections', connectionRoutes);
+router.use('/posts', postRoutes);
+
+
 module.exports = router;

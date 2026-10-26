@@ -3,8 +3,10 @@ const ApiError = require('../errors/ApiError');
 const JournalEntry = require('../models/JournalEntry');
 const PurchaseOrder = require('../models/PurchaseOrder');
 
+const round2 = (num) => Math.round((Number(num) || 0) * 100) / 100;
+
 /**
- * إنشاء أمر شراء (draft)
+ * إنشاء أمر شراء (draft) مع دعم الكميات المدفوعة والمجانية والخصومات والسعر الصافي
  */
 const create = async (companyId, userId, payload) => {
   const client = await pool.connect();
@@ -27,7 +29,7 @@ const create = async (companyId, userId, payload) => {
     );
     if (!cur.rowCount) throw new ApiError(400, 'Currency not found');
 
-    // احسب المجاميع
+    // احسب المجاميع والعناصر المجهزة
     const totals = await calculateTotals(client, companyId, payload.items);
 
     // أدخل الطلب
@@ -46,17 +48,19 @@ const create = async (companyId, userId, payload) => {
     );
     const order = orderRes.rows[0];
 
-    // أدخل السطور (مع batch_number و expiry_date اختياري)
+    // أدخل السطور مع الحقول الجديدة
     for (const item of totals.enrichedItems) {
       await client.query(
         `INSERT INTO purchase_order_items
            (order_id, product_id, quantity, unit_price, tax_rate, tax_amount, line_total,
-            batch_number, expiry_date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            batch_number, expiry_date, paid_quantity, bonus_quantity, discount_rate, discount_amount, net_unit_price)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
         [
           order.id, item.product_id, item.quantity, item.unit_price,
           item.tax_rate, item.tax_amount, item.line_total,
           item.batch_number || null, item.expiry_date || null,
+          item.paid_quantity, item.bonus_quantity,
+          item.discount_rate, item.discount_amount, item.net_unit_price,
         ]
       );
     }
@@ -72,7 +76,7 @@ const create = async (companyId, userId, payload) => {
 };
 
 /**
- * تأكيد أمر الشراء → استلام مخزون + إنشاء قيد
+ * تأكيد أمر الشراء → استلام مخزون بالسعر الصافي + تحديث سعر البيع بناءً على profit_margin + إنشاء قيد
  */
 const confirm = async (companyId, userId, orderId) => {
   const client = await pool.connect();
@@ -95,16 +99,14 @@ const confirm = async (companyId, userId, orderId) => {
       [orderId]
     );
 
-    // 1) إضافة المخزون (batches)
-    // نفترض أن كل سطر ينشئ batch جديد (ما لم يُعطَ batch_number -> نعيد استخدام الموجود)
     let totalInventoryCost = 0;
 
     for (const item of itemsRes.rows) {
       const batchNumber = item.batch_number || `PO${order.order_number}-${item.id.slice(0, 8)}`;
       const expiry = item.expiry_date || '2099-12-31';
+      const totalPhysicalQty = Number(item.quantity); // الإجمالي (مدفوع + مجاني)
+      const unitCost = Number(item.net_unit_price) > 0 ? Number(item.net_unit_price) : Number(item.unit_price);
 
-      // نحتاج warehouse_id — نستخدم الرئيسي أو نطلب من المستخدم إضافته
-      // نستخدم أول مستودع نشط (المستودع الرئيسي عادة)
       const warehouseRes = await client.query(
         `SELECT id FROM warehouses WHERE company_id = $1 AND is_active = TRUE
          ORDER BY created_at ASC LIMIT 1`,
@@ -113,7 +115,7 @@ const confirm = async (companyId, userId, orderId) => {
       if (!warehouseRes.rowCount) throw new ApiError(400, 'No active warehouse found');
       const warehouseId = warehouseRes.rows[0].id;
 
-      // ابحث عن batch موجود بنفس (product, warehouse, batch_number)
+      // ابحث عن batch موجود
       const existingBatch = await client.query(
         `SELECT id, quantity FROM product_batches
          WHERE product_id = $1 AND warehouse_id = $2 AND batch_number = $3
@@ -123,60 +125,74 @@ const confirm = async (companyId, userId, orderId) => {
 
       let batchId;
       if (existingBatch.rowCount) {
-        // أضف للكمية
         await client.query(
           `UPDATE product_batches SET quantity = quantity + $1, cost_price = $2
            WHERE id = $3`,
-          [item.quantity, item.unit_price, existingBatch.rows[0].id]
+          [totalPhysicalQty, unitCost, existingBatch.rows[0].id]
         );
         batchId = existingBatch.rows[0].id;
       } else {
-        // أنشئ batch جديد
         const newBatch = await client.query(
           `INSERT INTO product_batches
              (company_id, product_id, warehouse_id, batch_number, expiry_date, cost_price, quantity)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
            RETURNING id`,
-          [companyId, item.product_id, warehouseId, batchNumber, expiry, item.unit_price, item.quantity]
+          [companyId, item.product_id, warehouseId, batchNumber, expiry, unitCost, totalPhysicalQty]
         );
         batchId = newBatch.rows[0].id;
       }
 
-      // سجّل حركة المخزون
+      // سجّل حركة المخزون بالكمية الكلية وتكلفة الوحدة الصافية
       await client.query(
         `INSERT INTO stock_movements
            (company_id, warehouse_id, batch_id, movement_type, quantity, unit_cost,
             reference_type, reference_id, movement_date, created_by)
          VALUES ($1, $2, $3, 'in', $4, $5, 'purchase', $6, $7, $8)`,
-        [companyId, warehouseId, batchId, item.quantity, item.unit_price,
+        [companyId, warehouseId, batchId, totalPhysicalQty, unitCost,
          orderId, order.order_date, userId]
       );
 
-      totalInventoryCost += Number(item.line_total);
+      // تحديث سعر التكلفة وسعر البيع المقترح للمنتج بناءً على profit_margin
+      const productRes = await client.query(
+        `SELECT profit_margin FROM products WHERE id = $1 AND company_id = $2`,
+        [item.product_id, companyId]
+      );
+      if (productRes.rowCount > 0) {
+        const profitMargin = Number(productRes.rows[0].profit_margin) || 0;
+        if (profitMargin > 0 && unitCost > 0) {
+          const suggestedSellingPrice = round2(unitCost * (1 + profitMargin / 100));
+          await client.query(
+            `UPDATE products SET cost_price = $1, selling_price = $2 WHERE id = $3 AND company_id = $4`,
+            [unitCost, suggestedSellingPrice, item.product_id, companyId]
+          );
+        } else {
+          await client.query(
+            `UPDATE products SET cost_price = $1 WHERE id = $2 AND company_id = $3`,
+            [unitCost, item.product_id, companyId]
+          );
+        }
+      }
+
+      totalInventoryCost += round2(Number(item.line_total));
     }
 
-    // 2) جلب الحسابات
+    // جلب الحسابات وإنشاء القيد المحاسبي
     const accounts = await getDefaultAccounts(client, companyId);
 
-    // داخل confirm بعد جلب order:
+    const rate = Number(order.exchange_rate) > 0 ? Number(order.exchange_rate) : 1;
+    const totalBase    = round2(Number(order.total) * rate);
+    const subtotalBase = round2(Number(order.subtotal) * rate);
+    const taxBase      = round2(Number(order.tax_total) * rate);
 
-const rate = Number(order.exchange_rate) > 0 ? Number(order.exchange_rate) : 1;
-const totalBase    = round2(Number(order.total) * rate);
-const subtotalBase = round2(Number(order.subtotal) * rate);
-const taxBase      = round2(Number(order.tax_total) * rate);
+    const lines = [
+      { account_id: accounts.inventory, debit: subtotalBase, credit: 0, description: 'استلام مخزون' },
+    ];
+    if (taxBase > 0) {
+      lines.push({ account_id: accounts.vat_input, debit: taxBase, credit: 0, description: 'ضريبة مدخلات' });
+    }
+    lines.push({ account_id: accounts.payable, credit: totalBase, debit: 0,
+                 description: `أمر شراء ${order.order_number} [${order.exchange_rate}]` });
 
-// القيد:
-const lines = [
-  { account_id: accounts.inventory, debit: subtotalBase, credit: 0, description: 'استلام مخزون' },
-];
-if (taxBase > 0) {
-  lines.push({ account_id: accounts.vat_input, debit: taxBase, credit: 0, description: 'ضريبة مدخلات' });
-}
-lines.push({ account_id: accounts.payable, credit: totalBase, debit: 0,
-             description: `أمر شراء ${order.order_number} [${order.exchange_rate}]` });
-    
-
-    
     const entry = await JournalEntry.create(client, companyId, {
       entry_date: order.order_date,
       description: `قيد أمر شراء ${order.order_number}`,
@@ -187,7 +203,6 @@ lines.push({ account_id: accounts.payable, credit: totalBase, debit: 0,
     });
     await JournalEntry.post(client, companyId, entry.id, userId);
 
-    // 4) تحديث الطلب
     await client.query(
       `UPDATE purchase_orders
        SET status = 'confirmed', journal_entry_id = $1
@@ -228,7 +243,6 @@ const cancel = async (companyId, orderId) => {
       throw new ApiError(400, 'Order cannot be cancelled');
     }
 
-    // إذا مرحّل، نعكس: نخصم المخزون ونلغي القيد
     if (order.status === 'confirmed') {
       const movements = await client.query(
         `SELECT sm.batch_id, SUM(sm.quantity)::numeric AS total_qty
@@ -239,7 +253,6 @@ const cancel = async (companyId, orderId) => {
       );
 
       for (const mv of movements.rows) {
-        // تحقق أن المخزون كافٍ للخصم (لم يُبع)
         const batch = await client.query(
           `SELECT quantity FROM product_batches WHERE id = $1 FOR UPDATE`,
           [mv.batch_id]
@@ -253,7 +266,6 @@ const cancel = async (companyId, orderId) => {
         );
       }
 
-      // قيد عكسي
       if (order.journal_entry_id) {
         const original = await JournalEntry.findById(companyId, order.journal_entry_id);
         if (original) {
@@ -309,35 +321,54 @@ async function calculateTotals(client, companyId, items) {
     );
     if (!p.rowCount) throw new ApiError(400, `Product ${item.product_id} not found`);
 
-    const qty = Number(item.quantity);
+    const paidQty = Number(item.paid_quantity ?? item.quantity);
+    const bonusQty = Number(item.bonus_quantity || 0);
+    const totalQty = paidQty + bonusQty;
     const price = Number(item.unit_price);
-    if (qty <= 0) throw new ApiError(400, 'Quantity must be > 0');
+
+    if (paidQty <= 0) throw new ApiError(400, 'Paid quantity must be > 0');
     if (price < 0) throw new ApiError(400, 'Price must be >= 0');
 
-    const lineSubtotal = qty * price;
-    const taxRate = Number(item.tax_rate || 0);
-    const taxAmount = lineSubtotal * (taxRate / 100);
-    const lineTotal = lineSubtotal + taxAmount;
+    const grossSubtotal = paidQty * price;
 
-    subtotal += lineSubtotal;
+    let discountAmt = Number(item.discount_amount || 0);
+    const discountRate = Number(item.discount_rate || 0);
+    if (discountRate > 0) {
+      discountAmt = grossSubtotal * (discountRate / 100);
+    }
+
+    const netSubtotal = Math.max(0, grossSubtotal - discountAmt);
+    // السعر الصافي للوحدة = صافي المبلغ / إجمالي الوحدات (المدفوعة + المجانية)
+    const netUnitPrice = totalQty > 0 ? round2(netSubtotal / totalQty) : 0;
+
+    const taxRate = Number(item.tax_rate || 0);
+    const taxAmount = netSubtotal * (taxRate / 100);
+    const lineTotal = netSubtotal + taxAmount;
+
+    subtotal += netSubtotal;
     taxTotal += taxAmount;
 
     enrichedItems.push({
       product_id: item.product_id,
-      quantity: qty,
+      paid_quantity: paidQty,
+      bonus_quantity: bonusQty,
+      quantity: totalQty, // إجمالي الكمية المخزنية
       unit_price: price,
+      discount_rate: discountRate,
+      discount_amount: round2(discountAmt),
+      net_unit_price: netUnitPrice,
       tax_rate: taxRate,
-      tax_amount: Math.round(taxAmount * 100) / 100,
-      line_total: Math.round(lineTotal * 100) / 100,
+      tax_amount: round2(taxAmount),
+      line_total: round2(lineTotal),
       batch_number: item.batch_number || null,
       expiry_date: item.expiry_date || null,
     });
   }
 
   return {
-    subtotal: Math.round(subtotal * 100) / 100,
-    tax_total: Math.round(taxTotal * 100) / 100,
-    total: Math.round((subtotal + taxTotal) * 100) / 100,
+    subtotal: round2(subtotal),
+    tax_total: round2(taxTotal),
+    total: round2(subtotal + taxTotal),
     enrichedItems,
   };
 }
@@ -346,7 +377,7 @@ async function getDefaultAccounts(client, companyId) {
   const codes = {
     inventory: '1130',
     payable: '2110',
-    vat_input: '2120',   // نستخدم نفس حساب الضريبة (يقبل رصيد مدين أو دائن)
+    vat_input: '2120',
   };
   const r = await client.query(
     `SELECT code, id FROM chart_of_accounts
@@ -365,26 +396,3 @@ async function getDefaultAccounts(client, companyId) {
 }
 
 module.exports = { create, confirm, cancel };
-
-// // في salesOrderService.cancel و purchaseOrderService.cancel
-// if (order.journal_entry_id) {
-//   const original = await JournalEntry.findById(companyId, order.journal_entry_id);
-//   if (original) {
-//     const reversedLines = original.lines.map((l) => ({
-//       account_id: l.account_id,
-//       debit: Number(l.credit),
-//       credit: Number(l.debit),
-//       description: `عكس: ${l.description || ''}`,
-//     }));
-//     const reverse = await JournalEntry.create(client, companyId, {
-//       entry_date: new Date().toISOString().slice(0, 10),
-//       description: `إلغاء طلب ${order.order_number}`,
-//       source_type: 'adjustment',
-//       source_id: orderId,
-//       created_by: null,
-//       lines: reversedLines,
-//     });
-//     await JournalEntry.post(client, companyId, reverse.id, null);
-//   }
-//   // لا تحذف الأصلي — أبقِه للأثر المحاسبي
-// }

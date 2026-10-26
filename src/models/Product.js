@@ -1,7 +1,7 @@
+// models/Product.js
 const {pool} = require('../config/pool');
 
 class Product {
-
   static async list(companyId, { search, is_active, page = 1, limit = 20 }) {
     const params = [companyId];
     const conds = ['p.company_id = $1'];
@@ -20,16 +20,16 @@ class Product {
 
     const rows = await pool.query(
       `SELECT p.id, p.sku, p.barcode, p.name, p.unit,
-              p.category, p.cost_price, p.selling_price,
+              p.category, p.cost_price, p.selling_price, p.profit_margin,
               p.tax_rate_id, p.min_stock_level, p.is_active, p.created_at,
               tr.name AS tax_rate_name, tr.rate AS tax_rate_value,
               COALESCE((SELECT SUM(quantity) FROM product_batches
                         WHERE product_id = p.id AND quantity > 0), 0)::numeric AS current_stock
-      FROM products p
-      LEFT JOIN tax_rates tr ON tr.id = p.tax_rate_id
-      WHERE ${conds.join(' AND ')}
-      ORDER BY p.created_at DESC
-      LIMIT $${params.length - 1} OFFSET $${params.length}`,
+       FROM products p
+       LEFT JOIN tax_rates tr ON tr.id = p.tax_rate_id
+       WHERE ${conds.join(' AND ')}
+       ORDER BY p.created_at DESC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
 
@@ -41,8 +41,7 @@ class Product {
     return {
       items: rows.rows,
       pagination: {
-        page: Number(page),
-        limit: Number(limit),
+        page: Number(page), limit: Number(limit),
         total: countRes.rows[0].total,
         pages: Math.ceil(countRes.rows[0].total / Number(limit)),
       },
@@ -52,56 +51,11 @@ class Product {
   static async findById(companyId, id) {
     const r = await pool.query(
       `SELECT id, sku, barcode, name, unit,
-              category, cost_price, selling_price,
+              category, cost_price, selling_price, profit_margin,
               tax_rate_id, revenue_account_id, inventory_account_id, cogs_account_id,
               min_stock_level, is_active, created_at
-      FROM products WHERE id = $1 AND company_id = $2`,
+       FROM products WHERE id = $1 AND company_id = $2`,
       [id, companyId]
-    );
-    return r.rows[0] || null;
-  }
-
-  static async create(client, companyId, data) {
-    const r = await client.query(
-      `INSERT INTO products
-        (company_id, sku, barcode, name, unit, category, cost_price, selling_price,
-          tax_rate_id, revenue_account_id, inventory_account_id, cogs_account_id, min_stock_level)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-      RETURNING id, sku, barcode, name, unit, category, cost_price, selling_price,
-                is_active, created_at`,
-      [
-        companyId, data.sku, data.barcode || null, data.name, data.unit,
-        data.category || null, data.cost_price || 0, data.selling_price || 0,
-        data.tax_rate_id || null,
-        data.revenue_account_id || null,
-        data.inventory_account_id || null,
-        data.cogs_account_id || null,
-        data.min_stock_level || 0,
-      ]
-    );
-    return r.rows[0];
-  }
-
-  static async update(companyId, id, payload) {
-    const allowed = ['sku', 'barcode', 'name', 'unit', 'category',
-                    'cost_price', 'selling_price', 'tax_rate_id',
-                    'revenue_account_id', 'inventory_account_id', 'cogs_account_id',
-                    'min_stock_level', 'is_active'];
-    const fields = [];
-    const params = [];
-    for (const k of allowed) {
-      if (payload[k] !== undefined) {
-        params.push(payload[k]);
-        fields.push(`${k} = $${params.length}`);
-      }
-    }
-    if (!fields.length) return null;
-    params.push(id, companyId);
-    const r = await pool.query(
-      `UPDATE products SET ${fields.join(', ')}
-      WHERE id = $${params.length - 1} AND company_id = $${params.length}
-      RETURNING id, sku, name, unit, category, cost_price, selling_price, is_active`,
-      params
     );
     return r.rows[0] || null;
   }
@@ -114,6 +68,66 @@ class Product {
     return r.rowCount > 0;
   }
 
+  static async create(client, companyId, data) {
+    // احسب profit_margin تلقائياً إذا لم يُعطَ
+    const cost = Number(data.cost_price) || 0;
+    const selling = Number(data.selling_price) || 0;
+    let profitMargin = Number(data.profit_margin);
+    if (!Number.isFinite(profitMargin) || profitMargin === 0) {
+      profitMargin = selling > 0 ? ((selling - cost) / selling) * 100 : 0;
+    }
+
+    const r = await client.query(
+      `INSERT INTO products
+         (company_id, sku, barcode, name, unit, category,
+          cost_price, selling_price, profit_margin,
+          tax_rate_id, revenue_account_id, inventory_account_id, cogs_account_id,
+          min_stock_level)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       RETURNING id, sku, barcode, name, unit, category,
+                 cost_price, selling_price, profit_margin,
+                 is_active, created_at`,
+      [
+        companyId, data.sku, data.barcode || null, data.name, data.unit,
+        data.category || null,
+        cost, selling, Math.round(profitMargin * 100) / 100,
+        data.tax_rate_id || null,
+        data.revenue_account_id || null,
+        data.inventory_account_id || null,
+        data.cogs_account_id || null,
+        data.min_stock_level || 0,
+      ]
+    );
+    return r.rows[0];
+  }
+
+  static async update(companyId, id, payload) {
+    const allowed = [
+      'sku', 'barcode', 'name', 'unit', 'category',
+      'cost_price', 'selling_price', 'profit_margin',
+      'tax_rate_id', 'revenue_account_id', 'inventory_account_id', 'cogs_account_id',
+      'min_stock_level', 'is_active',
+    ];
+    const fields = [];
+    const params = [];
+    for (const k of allowed) {
+      if (payload[k] !== undefined) {
+        params.push(payload[k]);
+        fields.push(`${k} = $${params.length}`);
+      }
+    }
+    if (!fields.length) return null;
+    params.push(id, companyId);
+    const r = await pool.query(
+      `UPDATE products SET ${fields.join(', ')}
+       WHERE id = $${params.length - 1} AND company_id = $${params.length}
+       RETURNING id, sku, name, unit, category, cost_price, selling_price,
+                 profit_margin, is_active`,
+      params
+    );
+    return r.rows[0] || null;
+  }
+
   static async delete(companyId, id) {
     const r = await pool.query(
       `DELETE FROM products WHERE id = $1 AND company_id = $2 RETURNING id`,
@@ -122,9 +136,6 @@ class Product {
     return r.rowCount > 0;
   }
 
-  /**
-   * حساب المخزون الحالي (مجموع كميات الـ batches)
-   */
   static async getStock(companyId, productId) {
     const r = await pool.query(
       `SELECT
