@@ -1,5 +1,6 @@
 const {pool} = require('../config/pool');
-
+const Supplier = require('./Supplier');
+const Customer = require('./Customer');
 class Connection {
   static async createRequest(requesterId, receiverId) {
     const r = await pool.query(

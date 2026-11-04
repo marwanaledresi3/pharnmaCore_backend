@@ -33,26 +33,26 @@ class Company {
   }
 
   static async findById(id) {
-    const r = await pool.query(
-      `SELECT c.id, c.name, c.currency_id, c.tax_number, c.address,
-              c.logo_url, c.is_active, c.created_at, c.updated_at,
-              c.email, c.phone, c.website, c.country, c.city,
-              cu.code AS currency_code, cu.symbol AS currency_symbol
-       FROM companies c
-       JOIN currencies cu ON cu.id = c.currency_id
-       WHERE c.id = $1`,
-      [id]
-    );
-    return r.rows[0] || null;
-  }
+  const r = await pool.query(
+    `SELECT c.id, c.name, c.name_en, c.currency_id, c.tax_number, c.address,
+            c.logo_url, c.use_shared_logo, c.is_active, c.created_at, c.updated_at,
+            c.email, c.phone, c.website, c.country, c.city,
+            cu.code AS currency_code, cu.symbol AS currency_symbol
+     FROM companies c
+     LEFT JOIN currencies cu ON cu.id = c.currency_id
+     WHERE c.id = $1`,
+    [id]
+  );
+  return r.rows[0] || null;
+}
 
-  static async create(client, { name, currency_id, tax_number, address, logo_url, email, phone }) {
+  static async create(client, { name, name_en, currency_id, tax_number, address, logo_url, email, phone }) {
     const r = await client.query(
       `INSERT INTO companies
-         (name, currency_id, tax_number, address, logo_url, email, phone)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id, name, currency_id, created_at`,
-      [name, currency_id, tax_number || null, address || null,
+         (name, name_en, currency_id, tax_number, address, logo_url, email, phone)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id, name, name_en, currency_id, created_at`,
+      [name, name_en, currency_id, tax_number || null, address || null,
        logo_url || null, email || null, phone || null]
     );
     return r.rows[0];
@@ -60,8 +60,8 @@ class Company {
 
   static async update(id, payload) {
     const allowed = [
-      'name', 'tax_number', 'address', 'logo_url',
-      'email', 'phone', 'website', 'country', 'city',
+      'name_en','name', 'tax_number', 'address', 'logo_url',
+      'email', 'phone', 'website', 'country', 'city','use_shared_logo',
     ];
     const fields = [];
     const params = [];
@@ -115,6 +115,20 @@ class Company {
     );
     return r.rows[0] || null;
   }
+static async upsertBranding(companyId, { logo_url, use_shared_logo }, client = pool) {
+  const r = await client.query(
+    `UPDATE companies
+     SET logo_url = $2,
+         use_shared_logo = COALESCE($3, use_shared_logo),
+         updated_at = NOW()
+     WHERE id = $1
+     RETURNING  logo_url, use_shared_logo, updated_at`,
+    [companyId, logo_url, use_shared_logo ?? null]
+  );
+  if (!r.rowCount) throw new Error('Company not found');
+  return r.rows[0];
+}
+
 }
 
 module.exports = Company;

@@ -32,30 +32,48 @@ const bootstrap = async (client, companyId, options = {}) => {
 /**
  * إنشاء شجرة الحسابات بالترتيب الهرمي (الأب قبل الابن)
  */
+
 const createDefaultChartOfAccounts = async (client, companyId) => {
   const codeToId = {};
 
-  // نرتّب حسب عدد النقاط في parent (الحسابات الجذرية أولاً)
+  // ترتيب الحسابات الرئيسية قبل الحسابات الفرعية
   const sorted = [...defaultAccounts].sort((a, b) => {
     const depthA = a.parent === null ? 0 : 1;
     const depthB = b.parent === null ? 0 : 1;
+
     return depthA - depthB;
   });
 
   for (const acc of sorted) {
-    const parentId = acc.parent ? codeToId[acc.parent] : null;
-    const created = await Account.create(client, companyId, {
-      code: acc.code,
-      name: acc.name,
-      account_type: acc.type,
-      parent_id: parentId,
-    });
-    codeToId[acc.code] = created.id;
+    // تحديد الحساب الأب
+    const parentId = acc.parent
+      ? codeToId[acc.parent]
+      : null;
+
+    if (acc.parent && !parentId) {
+      throw new Error(
+        `Parent account ${acc.parent} not found for account ${acc.code}`
+      );
+    }
+
+    // إنشاء الحساب أو استرجاع الموجود
+    const account = await Account.createOrGet(
+      client,
+      companyId,
+      {
+        code: acc.code,
+        name: acc.name,
+        account_type: acc.type,
+        parent_id: parentId,
+      }
+    );
+
+    // الاحتفاظ بمعرف الحساب لاستخدامه في الحسابات الفرعية
+    codeToId[acc.code] = account.id;
   }
 
   return codeToId;
 };
-
 /**
  * ضريبة القيمة المضافة الافتراضية 15%
  */

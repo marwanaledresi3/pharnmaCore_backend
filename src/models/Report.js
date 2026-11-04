@@ -1,130 +1,135 @@
 const {pool} = require('../config/pool');
-
+const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 class Report {
   /**
    * ═══════════════════════════════════════════
    * Dashboard - ملخص شامل
    * ═══════════════════════════════════════════
    */
-  static async dashboard(companyId) {
-    const [
-      salesToday, salesMonth,
-      purchasesMonth,
-      receivables, payables,
-      cashBalance, bankBalance,
-      lowStockCount, expiringCount,
-      overdueInvoices,
-    ] = await Promise.all([
-      // مبيعات اليوم
-      pool.query(
-        `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
-         FROM invoices
-         WHERE company_id = $1 AND invoice_type = 'sale'
-           AND invoice_date = CURRENT_DATE AND status <> 'cancelled'`,
-        [companyId]
-      ),
-      // مبيعات الشهر
-      pool.query(
-        `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
-         FROM invoices
-         WHERE company_id = $1 AND invoice_type = 'sale'
-           AND DATE_TRUNC('month', invoice_date) = DATE_TRUNC('month', CURRENT_DATE)
-           AND status <> 'cancelled'`,
-        [companyId]
-      ),
-      // مشتريات الشهر
-      pool.query(
-        `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
-         FROM invoices
-         WHERE company_id = $1 AND invoice_type = 'purchase'
-           AND DATE_TRUNC('month', invoice_date) = DATE_TRUNC('month', CURRENT_DATE)
-           AND status <> 'cancelled'`,
-        [companyId]
-      ),
-      // ذمم مدينة
-      pool.query(
-        `SELECT COALESCE(SUM(total - paid_amount), 0)::numeric AS balance
-         FROM invoices
-         WHERE company_id = $1 AND invoice_type = 'sale'
-           AND status IN ('unpaid', 'partial')`,
-        [companyId]
-      ),
-      // ذمم دائنة
-      pool.query(
-        `SELECT COALESCE(SUM(total - paid_amount), 0)::numeric AS balance
-         FROM invoices
-         WHERE company_id = $1 AND invoice_type = 'purchase'
-           AND status IN ('unpaid', 'partial')`,
-        [companyId]
-      ),
-      // رصيد الصندوق (من القيود)
-      pool.query(
-        `SELECT COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
-         FROM journal_entry_lines jel
-         JOIN journal_entries je ON je.id = jel.journal_entry_id
-         JOIN chart_of_accounts a ON a.id = jel.account_id
-         WHERE je.company_id = $1 AND je.status = 'posted'
-           AND a.code = '1111'`,
-        [companyId]
-      ),
-      // رصيد البنك
-      pool.query(
-        `SELECT COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
-         FROM journal_entry_lines jel
-         JOIN journal_entries je ON je.id = jel.journal_entry_id
-         JOIN chart_of_accounts a ON a.id = jel.account_id
-         WHERE je.company_id = $1 AND je.status = 'posted'
-           AND a.code = '1112'`,
-        [companyId]
-      ),
-      // منتجات تحت الحد الأدنى
-      pool.query(
-        `SELECT COUNT(*)::int AS count
-         FROM products p
-         WHERE p.company_id = $1 AND p.is_active = TRUE
-           AND COALESCE((SELECT SUM(quantity) FROM product_batches WHERE product_id = p.id), 0) < p.min_stock_level`,
-        [companyId]
-      ),
-      // batches قرب الانتهاء (30 يوم)
-      pool.query(
-        `SELECT COUNT(*)::int AS count
-         FROM product_batches
-         WHERE company_id = $1 AND quantity > 0
-           AND expiry_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'`,
-        [companyId]
-      ),
-      // فواتير متأخرة
-      pool.query(
-        `SELECT COUNT(*)::int AS count, COALESCE(SUM(total - paid_amount), 0)::numeric AS amount
-         FROM invoices
-         WHERE company_id = $1 AND status IN ('unpaid', 'partial')
-           AND due_date < CURRENT_DATE`,
-        [companyId]
-      ),
-    ]);
-    const returnsMonth = await pool.query(
-        `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
-            FROM returns
-            WHERE company_id = $1 AND status = 'confirmed'
-            AND DATE_TRUNC('month', return_date) = DATE_TRUNC('month', CURRENT_DATE)`,
-        [companyId]
-    );
+ static async dashboard(companyId) {
+  const [
+    salesToday, salesMonth,
+    purchasesMonth,
+    receivables, payables,
+    cashBalance, bankBalance,
+    lowStockCount, expiringCount,
+    overdueInvoices,
+  ] = await Promise.all([
+    // مبيعات اليوم
+    pool.query(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
+       FROM invoices
+       WHERE company_id = $1 AND invoice_type = 'sales'
+         AND invoice_date = CURRENT_DATE AND status <> 'cancelled'`,
+      [companyId]
+    ),
+    // مبيعات الشهر
+    pool.query(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
+       FROM invoices
+       WHERE company_id = $1 AND invoice_type = 'sales'
+         AND DATE_TRUNC('month', invoice_date) = DATE_TRUNC('month', CURRENT_DATE)
+         AND status <> 'cancelled'`,
+      [companyId]
+    ),
+    // مشتريات الشهر
+    pool.query(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
+       FROM invoices
+       WHERE company_id = $1 AND invoice_type = 'purchase'
+         AND DATE_TRUNC('month', invoice_date) = DATE_TRUNC('month', CURRENT_DATE)
+         AND status <> 'cancelled'`,
+      [companyId]
+    ),
+    // ذمم مدينة (من القيود المحاسبية — أدق)
+    pool.query(
+      `SELECT COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
+       FROM journal_entry_lines jel
+       JOIN journal_entries je ON je.id = jel.journal_entry_id
+       JOIN chart_of_accounts a ON a.id = jel.account_id
+       WHERE je.company_id = $1 AND je.status = 'posted'
+         AND a.code = '112'`,
+      [companyId]
+    ),
+    // ذمم دائنة (من القيود المحاسبية)
+    pool.query(
+      `SELECT COALESCE(SUM(jel.credit - jel.debit), 0)::numeric AS balance
+       FROM journal_entry_lines jel
+       JOIN journal_entries je ON je.id = jel.journal_entry_id
+       JOIN chart_of_accounts a ON a.id = jel.account_id
+       WHERE je.company_id = $1 AND je.status = 'posted'
+         AND a.code = '211'`,
+      [companyId]
+    ),
+    // رصيد الصندوق (1111)
+    pool.query(
+      `SELECT COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
+       FROM journal_entry_lines jel
+       JOIN journal_entries je ON je.id = jel.journal_entry_id
+       JOIN chart_of_accounts a ON a.id = jel.account_id
+       WHERE je.company_id = $1 AND je.status = 'posted'
+         AND a.code = '1111'`,
+      [companyId]
+    ),
+    // رصيد البنك (1112)
+    pool.query(
+      `SELECT COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
+       FROM journal_entry_lines jel
+       JOIN journal_entries je ON je.id = jel.journal_entry_id
+       JOIN chart_of_accounts a ON a.id = jel.account_id
+       WHERE je.company_id = $1 AND je.status = 'posted'
+         AND a.code = '1112'`,
+      [companyId]
+    ),
+    // منتجات تحت الحد الأدنى
+    pool.query(
+      `SELECT COUNT(*)::int AS count
+       FROM products p
+       WHERE p.company_id = $1 AND p.is_active = TRUE
+         AND COALESCE((SELECT SUM(quantity) FROM product_batches WHERE product_id = p.id), 0) < p.min_stock_level`,
+      [companyId]
+    ),
+    // batches قرب الانتهاء (30 يوم)
+    pool.query(
+      `SELECT COUNT(*)::int AS count
+       FROM product_batches
+       WHERE company_id = $1 AND quantity > 0
+         AND expiry_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'`,
+      [companyId]
+    ),
+    // فواتير متأخرة
+    pool.query(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(total - paid_amount), 0)::numeric AS amount
+       FROM invoices
+       WHERE company_id = $1 AND status IN ('unpaid', 'partial')
+         AND due_date < CURRENT_DATE`,
+      [companyId]
+    ),
+  ]);
 
+  // مرتجعات الشهر
+  const returnsMonth = await pool.query(
+    `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
+     FROM returns
+     WHERE company_id = $1 AND status = 'confirmed'
+       AND DATE_TRUNC('month', return_date) = DATE_TRUNC('month', CURRENT_DATE)`,
+    [companyId]
+  );
 
-    return {
-      sales_today: salesToday.rows[0],
-      sales_month: salesMonth.rows[0],
-      purchases_month: purchasesMonth.rows[0],
-      receivables: receivables.rows[0].balance,
-      payables: payables.rows[0].balance,
-      cash_balance: cashBalance.rows[0].balance,
-      bank_balance: bankBalance.rows[0].balance,
-      low_stock_count: lowStockCount.rows[0].count,
-      expiring_batches_count: expiringCount.rows[0].count,
-      overdue_invoices: overdueInvoices.rows[0],
-      returns_month: returnsMonth.rows[0],
-    };
-  }
+  return {
+    sales_today: salesToday.rows[0],
+    sales_month: salesMonth.rows[0],
+    purchases_month: purchasesMonth.rows[0],
+    receivables: receivables.rows[0].balance,
+    payables: payables.rows[0].balance,
+    cash_balance: cashBalance.rows[0].balance,
+    bank_balance: bankBalance.rows[0].balance,
+    low_stock_count: lowStockCount.rows[0].count,
+    expiring_batches_count: expiringCount.rows[0].count,
+    overdue_invoices: overdueInvoices.rows[0],
+    returns_month: returnsMonth.rows[0],
+  };
+}
 
   /**
    * ═══════════════════════════════════════════
@@ -353,18 +358,24 @@ class Report {
     const asOf = as_of_date || new Date().toISOString().slice(0, 10);
 
     const r = await pool.query(
-      `SELECT c.id AS customer_id, c.name AS customer_name,
-              i.id AS invoice_id, i.invoice_number, i.invoice_date, i.due_date,
-              (i.total - i.paid_amount)::numeric AS balance,
-              (DATE $1::date - i.due_date) AS days_overdue
-       FROM invoices i
-       JOIN customers c ON c.id = i.customer_id
-       WHERE i.company_id = $2 AND i.invoice_type = 'sale'
-         AND i.status IN ('unpaid', 'partial')
-         AND i.invoice_date <= $1::date
-       ORDER BY c.name, i.due_date`,
-      [asOf, companyId]
-    );
+  `SELECT
+      c.id AS customer_id,
+      c.name AS customer_name,
+      i.id AS invoice_id,
+      i.invoice_number,
+      i.invoice_date,
+      i.due_date,
+      (COALESCE(i.total, 0) - COALESCE(i.paid_amount, 0))::numeric AS balance,
+      ($1::date - i.due_date::date) AS days_overdue
+   FROM invoices i
+   JOIN customers c ON c.id = i.customer_id
+   WHERE i.company_id = $2
+     AND i.invoice_type = 'sales'
+     AND i.status IN ('unpaid', 'partial')
+     AND i.invoice_date < ($1::date + INTERVAL '1 day')
+   ORDER BY c.name, i.due_date`,
+  [asOf, companyId]
+);
 
     // تجميع حسب العميل مع buckets
     const byCustomer = {};
@@ -433,7 +444,7 @@ class Report {
       `SELECT s.id AS supplier_id, s.name AS supplier_name,
               i.id AS invoice_id, i.invoice_number, i.invoice_date, i.due_date,
               (i.total - i.paid_amount)::numeric AS balance,
-              (DATE $1::date - i.due_date) AS days_overdue
+              ($1::date - i.due_date) AS days_overdue
        FROM invoices i
        JOIN suppliers s ON s.id = i.supplier_id
        WHERE i.company_id = $2 AND i.invoice_type = 'purchase'
@@ -501,7 +512,7 @@ class Report {
     const params = [companyId];
     const conds = [
       `i.company_id = $1`,
-      `i.invoice_type = 'sale'`,
+      `i.invoice_type = 'sales'`,
       `i.status <> 'cancelled'`,
     ];
 
@@ -783,6 +794,86 @@ class Report {
       net_payable: outputTotal - inputTotal,
     };
   }
+  /**
+ * ميزان المراجعة — لكل حساب: مدين، دائن، رصيد.
+ * يشمل الحسابات التي لها حركات فقط.
+ */
+static async trialBalance(companyId, { date_from, date_to } = {}) {
+  const params = [companyId];
+  const conds = ['je.company_id = $1', `je.status = 'posted'`];
+
+  if (date_from) {
+    params.push(date_from);
+    conds.push(`je.entry_date >= $${params.length}`);
+  }
+  if (date_to) {
+    params.push(date_to);
+    conds.push(`je.entry_date <= $${params.length}`);
+  }
+
+  const r = await pool.query(
+    `SELECT
+       a.id,
+       a.code,
+       a.name,
+       a.account_type,
+       COALESCE(SUM(jel.debit), 0)::numeric AS total_debit,
+       COALESCE(SUM(jel.credit), 0)::numeric AS total_credit,
+       COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
+     FROM chart_of_accounts a
+     INNER JOIN journal_entry_lines jel ON jel.account_id = a.id
+     INNER JOIN journal_entries je ON je.id = jel.journal_entry_id
+     WHERE ${conds.join(' AND ')} AND a.company_id = $1
+     GROUP BY a.id, a.code, a.name, a.account_type
+     HAVING COALESCE(SUM(jel.debit), 0) <> 0 OR COALESCE(SUM(jel.credit), 0) <> 0
+     ORDER BY a.code`,
+    params
+  );
+
+  // تصنيف حسب نوع الحساب
+  const accounts = r.rows.map((row) => ({
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    account_type: row.account_type,
+    total_debit: Number(row.total_debit),
+    total_credit: Number(row.total_credit),
+    // الرصيد بصيغة موحدة:
+    // - asset / expense → debit - credit (موجب = مدين)
+    // - liability / equity / revenue → credit - debit (موجب = دائن)
+    balance:
+      ['asset', 'expense'].includes(row.account_type)
+        ? Number(row.total_debit) - Number(row.total_credit)
+        : Number(row.total_credit) - Number(row.total_debit),
+    balance_side:
+      Math.abs(Number(row.total_debit) - Number(row.total_credit)) < 0.005
+        ? 'zero'
+        : Number(row.total_debit) > Number(row.total_credit)
+          ? 'debit'
+          : 'credit',
+    raw_balance: Number(row.balance),
+  }));
+
+  const totals = accounts.reduce(
+    (acc, a) => ({
+      debit: acc.debit + a.total_debit,
+      credit: acc.credit + a.total_credit,
+    }),
+    { debit: 0, credit: 0 }
+  );
+
+  return {
+    date_from: date_from || null,
+    date_to: date_to || new Date().toISOString().slice(0, 10),
+    accounts,
+    totals: {
+      debit: round2(totals.debit),
+      credit: round2(totals.credit),
+      balanced: Math.abs(totals.debit - totals.credit) < 0.01,
+      difference: round2(totals.debit - totals.credit),
+    },
+  };
+}
 }
 
 module.exports = Report;

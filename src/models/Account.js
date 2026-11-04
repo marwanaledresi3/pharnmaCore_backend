@@ -39,6 +39,47 @@ class Account {
     );
     return r.rows[0];
   }
+  /**
+ * إنشاء الحساب إذا لم يكن موجوداً، أو استرجاع الحساب الموجود
+ * تستخدم أثناء تهيئة الشركة لمنع تكرار الحسابات
+ */
+static async createOrGet(
+  client,
+  companyId,
+  { code, name, account_type, parent_id = null }
+) {
+  // محاولة إنشاء الحساب
+  const inserted = await client.query(
+    `INSERT INTO chart_of_accounts
+      (company_id, code, name, account_type, parent_id)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (company_id, code) DO NOTHING
+     RETURNING id, code, name, account_type, parent_id`,
+    [companyId, code, name, account_type, parent_id]
+  );
+
+  // إذا تم الإنشاء بنجاح
+  if (inserted.rows.length > 0) {
+    return inserted.rows[0];
+  }
+
+  // إذا كان موجوداً، نسترجعه دون تعديل بياناته
+  const existing = await client.query(
+    `SELECT id, code, name, account_type, parent_id
+     FROM chart_of_accounts
+     WHERE company_id = $1 AND code = $2
+     LIMIT 1`,
+    [companyId, code]
+  );
+
+  if (existing.rows.length === 0) {
+    throw new Error(
+      `Failed to create or retrieve account: ${code}`
+    );
+  }
+
+  return existing.rows[0];
+}
 
   static async existsByCode(companyId, code) {
     const r = await pool.query(

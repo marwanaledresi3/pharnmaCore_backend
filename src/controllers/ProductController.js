@@ -14,11 +14,44 @@ const getOne = asyncHandler(async (req, res) => {
   res.json({ success: true, data: product });
 });
 
+// جلب مخزون جميع المنتجات أو منتج واحد
 const getStock = asyncHandler(async (req, res) => {
-  const product = await Product.findById(req.user.company_id, req.params.id);
-  if (!product) throw new ApiError(404, 'Product not found');
-  const stock = await Product.getStock(req.user.company_id, product.id);
-  res.json({ success: true, data: { product, ...stock } });
+  const targetCompanyId = req.params.id;   // ← الشركة المستهدفة (المورد)
+  const productId = req.query.productId;
+
+  // ⚠️ تحقق: هل المستخدم مرتبط بهذه الشركة؟
+  if (targetCompanyId !== req.user.company_id) {
+    const connected = await pool.query(
+      `SELECT 1 FROM suppliers
+       WHERE company_id = $1 AND source_company_id = $2
+       UNION
+       SELECT 1 FROM customers
+       WHERE company_id = $1 AND source_company_id = $2`,
+      [req.user.company_id, targetCompanyId]
+    );
+    if (!connected.rowCount) {
+      throw new ApiError(403, 'Not connected to this company');
+    }
+  }
+
+  if (productId) {
+    const product = await Product.findById(targetCompanyId, productId);
+    if (!product) throw new ApiError(404, 'Product not found');
+
+    const stock = await Product.getStock(targetCompanyId, product.id);
+    return res.json({
+      success: true,
+      data: { product, ...stock },
+    });
+  }
+
+  const stock = await Product.getAllStock(targetCompanyId);
+  return res.json({ success: true, data: stock });
+});
+
+
+const getBatches = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await Product.getBatches(req.user.company_id, req.params.id) });
 });
 
 const create = asyncHandler(async (req, res) => {
@@ -65,4 +98,4 @@ const remove = asyncHandler(async (req, res) => {
   res.json({ success: true, message: 'Product deleted' });
 });
 
-module.exports = { list, getOne, getStock, create, update, remove };
+module.exports = { list, getOne, getStock, create, update, remove,getBatches };

@@ -14,6 +14,12 @@ const dateRange = [
 // Dashboard
 router.get('/dashboard', ctrl.dashboard);
 
+router.get('/trial-balance',
+  authorize('reports.view_financial'),
+  dateRange,
+  validate,
+  ctrl.trialBalance
+);
 // Financial
 router.get('/balance-sheet', authorize('reports.view_financial'),
   [query('date_to').optional().isISO8601()], validate, ctrl.balanceSheet);

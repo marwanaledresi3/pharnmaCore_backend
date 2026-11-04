@@ -10,6 +10,7 @@ router.post(
   '/register-company',
   [
     body('company.name').trim().notEmpty(),
+    body('company.name_english').trim().notEmpty(),
     body('company.currency_code').isLength({ min: 3, max: 3 }),
     body('owner.name').trim().notEmpty(),
     body('owner.email').isEmail().normalizeEmail(),

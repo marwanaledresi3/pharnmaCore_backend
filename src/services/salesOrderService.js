@@ -120,7 +120,7 @@ const confirm = async (companyId, userId, orderId) => {
            (company_id, warehouse_id, batch_id, movement_type, quantity, unit_cost,
             reference_type, reference_id, movement_date, created_by)
          SELECT $1, b.warehouse_id, b.id, 'out', $2, b.cost_price,
-                'sale', $3, $4, $5
+                'sales', $3, $4, $5
          FROM product_batches b WHERE b.id = $6`,
         [companyId, totalPhysicalQty, orderId, order.order_date, userId, batchId]
       );
@@ -145,7 +145,7 @@ const confirm = async (companyId, userId, orderId) => {
     const entry = await JournalEntry.create(client, companyId, {
       entry_date: order.order_date,
       description: `قيد طلب بيع ${order.order_number}`,
-      source_type: 'sale',
+      source_type: 'sales',
       source_id: orderId,
       created_by: userId,
       lines,
@@ -186,7 +186,7 @@ const cancel = async (companyId, orderId) => {
       const movements = await client.query(
         `SELECT sm.batch_id, SUM(sm.quantity)::numeric AS total_qty
          FROM stock_movements sm
-         WHERE sm.reference_type = 'sale' AND sm.reference_id = $1
+         WHERE sm.reference_type = 'sales' AND sm.reference_id = $1
          GROUP BY sm.batch_id`,
         [orderId]
       );

@@ -2,7 +2,11 @@ const router = require('express').Router();
 const connectionRoutes = require('./connectionRoutes');
 const postRoutes = require('./postRoutes');
 const globalProductRoutes = require('./globalProductRoutes');
+const expenseRoutes = require('./expenseRoutes');
+const branchRoutes = require('./branchRoutes');
 
+router.use('/branches', branchRoutes);
+router.use('/expenses', expenseRoutes);
 router.use('/global-products', globalProductRoutes);
 router.use('/auth',            require('./authRoutes'));
 router.use('/users',           require('./userRoutes'));
@@ -28,6 +32,6 @@ router.use('/returns', require('./returnRoutes'));
 router.use('/pdf', require('./pdfRoutes'));
 router.use('/connections', connectionRoutes);
 router.use('/posts', postRoutes);
-
-
+router.use('/public', require('./publicRoutes'));   // ← تأكد أنها قبل أي middleware auth عام
+router.use('/dashboard', require('./dashboardRoutes'));
 module.exports = router;

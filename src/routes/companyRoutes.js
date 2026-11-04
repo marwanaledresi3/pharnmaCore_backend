@@ -3,7 +3,7 @@ const ctrl = require('../controllers/CompanyController');
 const { authenticate, requireCompany, authorize } = require('../middlewares/authMiddleware');
 const validate = require('../middlewares/validateMiddleware');
 const { body } = require('express-validator');
-
+const { uploadLogo } = require('../config/multer');
 router.use(authenticate, requireCompany);
 
 router.get('/current', authorize('companies.view'), ctrl.getCurrent);
@@ -14,7 +14,12 @@ router.get('/vendors', authorize('companies.view'), ctrl.getAllVendorsAndSupplie
 // مسار جلب الشركات فقط مع تفاصيل العملة
 router.get('/list', authorize('companies.view'), ctrl.getCompaniesOnly);
 
-
+router.put(
+  '/logo',
+    authorize('companies.update'),
+  uploadLogo.single('logo'),
+  ctrl.uploadLogo
+);
 router.patch('/current', authorize('companies.update'),
   [body('name').optional().trim().notEmpty(),
    body('email').optional({ nullable: true }).isEmail(),

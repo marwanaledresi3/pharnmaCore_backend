@@ -40,7 +40,7 @@ const linesValidator = [
   body('description').optional().trim(),
   body('source_type')
     .optional()
-    .isIn(['sale', 'purchase', 'payment', 'manual', 'adjustment']),
+    .isIn(['sales', 'purchase', 'payment', 'manual', 'adjustment']),
   body('source_id').optional({ nullable: true }).isUUID(),
   body('lines').isArray({ min: 2 }).withMessage('At least 2 lines are required'),
   body('lines.*.account_id').isUUID(),

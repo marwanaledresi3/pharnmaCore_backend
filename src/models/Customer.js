@@ -51,61 +51,70 @@ class Customer {
     );
     return r.rows[0] || null;
   }
-  static async create(client, companyId, data) {
-    const r = await client.query(
-      `INSERT INTO customers (
-        company_id,
-        user_id,
-        name,
-        phone,
-        email,
-        address,
-        tax_number,
-        credit_limit,
-        account_id,
-        code
-      )
-      VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9,
-        (
-          SELECT 'CUST-' ||
-                  LPAD((COUNT(*) + 1)::text, 4, '0')
-          FROM customers
-          WHERE company_id = $1
-        )
-      )
-      RETURNING id, name, code, phone, email, is_active, created_at`,
-      [
-        companyId,
-        data.user_id || null,
-        data.name,
-        data.phone || null,
-        data.email || null,
-        data.address || null,
-        data.tax_number || null,
-        data.credit_limit || 0,
-        data.account_id || null,
-      ]
+  
+static async create(client, companyId, data) {
+  const r = await client.query(
+    `INSERT INTO customers (
+      company_id,
+      user_id,
+      name,
+      phone,
+      email,
+      address,
+      tax_number,
+      credit_limit,
+      account_id,
+      code,
+      source_company_id
+    )
+    VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9,
+      (
+        SELECT 'CUST-' ||
+          LPAD((COUNT(*) + 1)::text, 4, '0')
+        FROM customers
+        WHERE company_id = $1
+      ),
+      $10
+    )
+    ON CONFLICT (company_id, source_company_id)
+      WHERE source_company_id IS NOT NULL
+    DO NOTHING
+    RETURNING id, name, code, phone, email,
+              is_active, created_at`,
+    [
+      companyId,
+      data.user_id || null,
+      data.name,
+      data.phone || null,
+      data.email || null,
+      data.address || null,
+      data.tax_number || null,
+      data.credit_limit || 0,
+      data.account_id || null,
+      data.source_company_id || null,
+    ]
+  );
+
+  if (r.rows[0]) return r.rows[0];
+
+  if (data.source_company_id) {
+    const existing = await client.query(
+      `SELECT id, name, code, phone, email,
+              is_active, created_at
+       FROM customers
+       WHERE company_id = $1
+         AND source_company_id = $2
+       LIMIT 1`,
+      [companyId, data.source_company_id]
     );
 
-    return r.rows[0];
+    if (existing.rows[0]) return existing.rows[0];
   }
-  static async create(client, companyId, data) {
-    const r = await client.query(
-      `INSERT INTO customers
-         (company_id, user_id, name, phone, email, address, tax_number,
-          credit_limit, account_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING id, name, phone, email, is_active, created_at`,
-      [
-        companyId, data.user_id || null, data.name,
-        data.phone || null, data.email || null, data.address || null,
-        data.tax_number || null, data.credit_limit || 0,
-        data.account_id || null,
-      ]
-    );
-    return r.rows[0];
-  }
+
+  throw new Error('تعذر إنشاء سجل العميل');
+}
+
 
   static async update(companyId, id, payload) {
     const allowed = ['name', 'phone', 'email', 'address', 'tax_number',

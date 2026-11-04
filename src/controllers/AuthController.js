@@ -22,6 +22,7 @@ const registerCompany = asyncHandler(async (req, res) => {
     // 2) الشركة
     const newCompany = await Company.create(client, {
       name: company.name,
+      name_en: company.name_english,
       currency_id: currencyId,
       tax_number: company.tax_number,
       address: company.address,
@@ -69,6 +70,7 @@ const registerCompany = asyncHandler(async (req, res) => {
     });
   } catch (err) {
     await client.query('ROLLBACK');
+    // console.error('createCompanyError:', err);
     throw err;
   } finally {
     client.release();

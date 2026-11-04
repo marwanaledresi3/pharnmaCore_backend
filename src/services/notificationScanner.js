@@ -163,7 +163,7 @@ async function scanOverdueInvoices(client, companyId) {
   );
 
   const notifications = r.rows.map((row) => {
-    const label = row.invoice_type === 'sale' ? 'عميل' : 'مورد';
+    const label = row.invoice_type === 'sales' ? 'عميل' : 'مورد';
     return {
       companyId,
       type: 'invoice_overdue',

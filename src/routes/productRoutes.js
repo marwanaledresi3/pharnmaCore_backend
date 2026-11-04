@@ -6,6 +6,7 @@ const { body, param, query } = require('express-validator');
 
 router.use(authenticate, requireCompany);
 
+// قائمة المنتجات
 router.get(
   '/',
   authorize('products.view'),
@@ -19,9 +20,40 @@ router.get(
   ctrl.list
 );
 
-router.get('/:id', authorize('products.view'), [param('id').isUUID()], validate, ctrl.getOne);
-router.get('/:id/stock', authorize('products.view'), [param('id').isUUID()], validate, ctrl.getStock);
 
+router.get(
+  '/stock',
+  authorize('products.view'),
+  validate,
+  ctrl.getStock
+);
+
+// دفعات منتج محدد
+router.get(
+  '/:id/batches',
+  authorize('products.view'),
+  [param('id').isUUID()],
+  validate,
+  ctrl.getBatches
+);
+
+// مخزون منتج محدد
+router.get(
+  '/:id/stock',
+  authorize('products.view'),
+  [param('id').isUUID()],
+  validate,
+  ctrl.getStock
+);
+
+// منتج محدد
+router.get(
+  '/:id',
+  authorize('products.view'),
+  [param('id').isUUID()],
+  validate,
+  ctrl.getOne
+);
 router.post(
   '/',
   authorize('products.create'),

@@ -13,9 +13,13 @@ const itemsValidator = [
   body('items.*.unit_price').optional().isFloat({ min: 0 }),
   body('items.*.batch_id').optional({ nullable: true }).isUUID(),
 ];
+router.post('/:id/confirm', authorize('invoices.update'),
+  [param('id').isUUID()], validate, ctrl.confirm);
 
+router.post('/:id/cancel', authorize('invoices.cancel'),
+  [param('id').isUUID()], validate, ctrl.cancel);
 router.get('/', authorize('invoices.view'),
-  [query('return_type').optional().isIn(['sale', 'purchase']),
+  [query('return_type').optional().isIn(['sales', 'purchase']),
    query('status').optional().isIn(['draft', 'confirmed', 'cancelled']),
    query('invoice_id').optional().isUUID(),
    query('date_from').optional().isISO8601(),
@@ -24,7 +28,7 @@ router.get('/', authorize('invoices.view'),
 
 router.get('/:id', authorize('invoices.view'), [param('id').isUUID()], validate, ctrl.getOne);
 
-router.post('/sale', authorize('invoices.create'),
+router.post('/sales', authorize('invoices.create'),
   [body('invoice_id').isUUID(),
    body('return_date').optional().isISO8601(),
    body('reason').optional().trim(),
@@ -38,10 +42,6 @@ router.post('/purchase', authorize('invoices.create'),
    ...itemsValidator],
   validate, ctrl.createPurchase);
 
-router.post('/:id/confirm', authorize('invoices.update'),
-  [param('id').isUUID()], validate, ctrl.confirm);
 
-router.post('/:id/cancel', authorize('invoices.cancel'),
-  [param('id').isUUID()], validate, ctrl.cancel);
 
 module.exports = router;

@@ -18,7 +18,7 @@ class Supplier {
     params.push(limit, offset);
 
     const rows = await pool.query(
-      `SELECT s.id, s.name, s.phone, s.email, s.address, s.tax_number,
+      `SELECT s.id, s.source_company_id , s.name, s.phone, s.email, s.address, s.tax_number,
               s.account_id, s.is_active, s.created_at
        FROM suppliers s
        WHERE ${conds.join(' AND ')}
@@ -44,7 +44,7 @@ class Supplier {
 
   static async findById(companyId, id) {
     const r = await pool.query(
-      `SELECT id, user_id, name, phone, email, address, tax_number,
+      `SELECT id,source_company_id user_id, name, phone, email, address, tax_number,
               account_id, is_active, created_at
        FROM suppliers WHERE id = $1 AND company_id = $2`,
       [id, companyId]
@@ -52,43 +52,68 @@ class Supplier {
     return r.rows[0] || null;
   }
 
-  static async create(client, companyId, data) {
-    const r = await client.query(
-      `INSERT INTO suppliers (
-        company_id,
-        user_id,
-        name,
-        phone,
-        email,
-        address,
-        tax_number,
-        account_id,
-        code
-      )
-      VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8,
-        (
-          SELECT 'SUP-' ||
-                  LPAD((COUNT(*) + 1)::text, 4, '0')
-          FROM suppliers
-          WHERE company_id = $1
-        )
-      )
-      RETURNING id, name, code, phone, email, is_active, created_at`,
-      [
-        companyId,
-        data.user_id || null,
-        data.name,
-        data.phone || null,
-        data.email || null,
-        data.address || null,
-        data.tax_number || null,
-        data.account_id || null,
-      ]
+  
+static async create(client, companyId, data) {
+  const r = await client.query(
+    `INSERT INTO suppliers (
+      company_id,
+      user_id,
+      name,
+      phone,
+      email,
+      address,
+      tax_number,
+      account_id,
+      code,
+      source_company_id
+    )
+    VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8,
+      (
+        SELECT 'SUP-' ||
+          LPAD((COUNT(*) + 1)::text, 4, '0')
+        FROM suppliers
+        WHERE company_id = $1
+      ),
+      $9
+    )
+    ON CONFLICT (company_id, source_company_id)
+      WHERE source_company_id IS NOT NULL
+    DO NOTHING
+    RETURNING id, name, code, phone, email,
+              is_active, created_at`,
+    [
+      companyId,
+      data.user_id || null,
+      data.name,
+      data.phone || null,
+      data.email || null,
+      data.address || null,
+      data.tax_number || null,
+      data.account_id || null,
+      data.source_company_id || null,
+    ]
+  );
+
+  if (r.rows[0]) return r.rows[0];
+
+  if (data.source_company_id) {
+    const existing = await client.query(
+      `SELECT id, name, code, phone, email,
+              is_active, created_at
+       FROM suppliers
+       WHERE company_id = $1
+         AND source_company_id = $2
+       LIMIT 1`,
+      [companyId, data.source_company_id]
     );
 
-    return r.rows[0];
+    if (existing.rows[0]) return existing.rows[0];
   }
+
+  throw new Error('تعذر إنشاء سجل المورد');
+}
+
   static async update(companyId, id, payload) {
     const allowed = ['name', 'phone', 'email', 'address', 'tax_number',
                      'account_id', 'is_active', 'user_id'];

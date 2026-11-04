@@ -71,7 +71,7 @@ class Return {
   }
 
   static async nextNumber(client, companyId, returnType) {
-    const prefix = returnType === 'sale' ? 'SR-' : 'PR-';
+    const prefix = returnType === 'sales' ? 'SR-' : 'PR-';
     const r = await client.query(
       `SELECT COUNT(*)::int + 1 AS next FROM returns
        WHERE company_id = $1 AND return_type = $2`,
@@ -116,21 +116,24 @@ class Return {
     return ret;
   }
 
-  static async updateStatus(companyId, id, newStatus) {
-    const r = await pool.query(
+  // src/models/Return.js
+  static async updateStatus(companyId, id, newStatus, client = null) {
+    const executor = client || pool;
+    const r = await executor.query(
       `UPDATE returns SET status = $1, updated_at = NOW()
-       WHERE id = $2 AND company_id = $3
-       RETURNING id, status`,
+      WHERE id = $2 AND company_id = $3
+      RETURNING id, status`,
       [newStatus, id, companyId]
     );
     return r.rows[0] || null;
   }
 
-  static async linkJournalEntry(companyId, id, journalEntryId) {
-    const r = await pool.query(
+  static async linkJournalEntry(companyId, id, journalEntryId, client = null) {
+    const executor = client || pool;
+    const r = await executor.query(
       `UPDATE returns SET journal_entry_id = $1, updated_at = NOW()
-       WHERE id = $2 AND company_id = $3
-       RETURNING id, journal_entry_id`,
+      WHERE id = $2 AND company_id = $3
+      RETURNING id, journal_entry_id`,
       [journalEntryId, id, companyId]
     );
     return r.rows[0] || null;

@@ -3,7 +3,8 @@ const ApiError = require('../errors/ApiError');
 const Company = require('../models/Company');
 const Currency = require('../models/Currency');
 const {pool} = require('../config/pool');
-
+const cloudinary = require('../config/cloudinary');
+const streamifier = require('streamifier');
 
 // جلب جميع الشركات والموردين معاً (القائمة المختلطة لشاشة الشراء)
 const getAllVendorsAndSuppliers = asyncHandler(async (req, res) => {
@@ -31,7 +32,21 @@ const getCurrent = asyncHandler(async (req, res) => {
 });
 
 const updateCurrent = asyncHandler(async (req, res) => {
-  const updated = await Company.update(req.user.company_id, req.body);
+  const payload = {
+    name: req.body.name,
+    name_en: req.body.name_en,
+    logo_url: req.body.logo_url,
+    use_shared_logo: req.body.use_shared_logo,
+    phone: req.body.phone,
+    email: req.body.email,
+    address: req.body.address,
+    tax_number: req.body.tax_number,
+    website: req.body.website,
+    country: req.body.country,
+    city: req.body.city,
+  };
+
+  const updated = await Company.update(req.user.company_id, payload);
   if (!updated) throw new ApiError(400, 'No valid fields to update');
   res.json({ success: true, data: updated });
 });
@@ -47,6 +62,10 @@ const getSettings = asyncHandler(async (req, res) => {
 });
 
 const updateSettings = asyncHandler(async (req, res) => {
+   const company_id = req.user.company_id;           // trust the JWT, not the URL
+if (!company_id  ) {
+   throw new ApiError(403, 'معرف الشركة ضروري');
+}
   const entries = Object.entries(req.body || {});
   if (!entries.length) throw new ApiError(400, 'No settings provided');
 
@@ -59,7 +78,7 @@ const updateSettings = asyncHandler(async (req, res) => {
          VALUES ($1, $2, $3)
          ON CONFLICT (company_id, key)
          DO UPDATE SET value = EXCLUDED.value`,
-        [req.user.company_id, key, JSON.stringify(value)]
+        [company_id, key, JSON.stringify(value)]
       );
     }
     await client.query('COMMIT');
@@ -169,6 +188,67 @@ const createExternalUser = asyncHandler(async (req, res) => {
     client.release();
   }
 });
+const update = asyncHandler(async (req, res) => {
+  const id = req.user.company_id;           // trust the JWT, not the URL
+if (id !== req.user.company_id && !req.user.is_super_admin) {
+  return next(new ForbiddenError('غير مصرح'));
+}
+  const payload = {
+    name: req.body.name,
+    name_en: req.body.name_en,
+    logo_url: req.body.logo_url,
+    use_shared_logo: req.body.use_shared_logo,
+    phone: req.body.phone,
+    email: req.body.email,
+    address: req.body.address,
+    tax_number: req.body.tax_number
+  };
+
+  const result = await Company.update(req.user.company_id, payload);
+
+  res.json({ success: true, data: result.rows[0] });
+});
+
+
+const uploadLogo = asyncHandler(async (req, res) => {
+  const companyId = req.user.company_id; // ✅ من JWT — يمنع IDOR
+
+  if (!req.file) {
+    throw new ApiError(400, 'لم يتم رفع أي ملف');
+  }
+
+  const company = await Company.findById(companyId);
+  if (!company) {
+    throw new ApiError(404, `الشركة بالمعرف ${companyId} غير موجودة.`);
+  }
+
+  // رفع إلى Cloudinary مع await
+  const result = await new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      { folder: 'company-logos', resource_type: 'image' },
+      (error, result) => (error ? reject(error) : resolve(result))
+    );
+    streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
+  });
+
+  // حفظ في DB مع rollback عند الفشل
+  let branding;
+  try {
+    branding = await Company.upsertBranding(companyId, {
+      logo_url: result.secure_url,
+      use_shared_logo: false,
+    });
+  } catch (dbErr) {
+    await cloudinary.uploader.destroy(result.public_id).catch(() => {});
+    throw new ApiError(500, 'فشل حفظ الشعار.');
+  }
+
+  res.json({
+    success: true,
+    message: 'تم رفع الشعار بنجاح.',
+    data: branding,
+  });
+});
 
 module.exports = {
 getAllVendorsAndSuppliers,
@@ -179,4 +259,6 @@ getCompaniesOnly,
   updateSettings,
   changeCurrency,
   createExternalUser,
+  uploadLogo,
+  update,
 };

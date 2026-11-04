@@ -8,7 +8,7 @@ router.use(authenticate, requireCompany);
 
 router.get('/', authorize('invoices.view'),
   [query('status').optional().isIn(['unpaid', 'partial', 'paid', 'cancelled']),
-   query('invoice_type').optional().isIn(['sale', 'purchase']),
+   query('invoice_type').optional().isIn(['sales', 'purchase']),
    query('date_from').optional().isISO8601(),
    query('date_to').optional().isISO8601()],
   validate, ctrl.list);

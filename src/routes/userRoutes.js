@@ -9,7 +9,16 @@ router.use(authenticate, requireCompany);
 router.get(
   '/',
   authorize('users.view'),
-  [query('page').optional().isInt({ min: 1 }), query('limit').optional().isInt({ min: 1, max: 100 })],
+  [
+    query('is_active').optional().isBoolean(),
+    query('user_type').optional().isIn(['internal', 'external']),
+    query('branch_id').optional({ nullable: true }).isUUID(),
+    query('page').optional().isInt({ min: 1 }),
+    query('limit').optional().isInt({ min: 1, max: 100 }),
+    query('search').optional().trim().isLength({ max: 100 }),
+    query('sort').optional().isIn(['name', 'email', 'is_active', 'created_at']),
+    query('order').optional().isIn(['asc', 'desc']),
+  ],
   validate,
   ctrl.list
 );
@@ -20,21 +29,39 @@ router.post(
   '/',
   authorize('users.create'),
   [
-    body('name').trim().notEmpty(),
+    body('name').trim().notEmpty().isLength({ max: 150 }),
     body('email').isEmail().normalizeEmail(),
-    body('password').isLength({ min: 8 }),
+    body('password').isLength({ min: 8, max: 100 }),
+    body('phone').optional({ nullable: true }).trim().isLength({ max: 50 }),
+    body('user_type').optional().isIn(['internal', 'external']),
+    body('is_active').optional().isBoolean(),
+    body('branch_id').optional({ nullable: true }).isUUID(),
     body('role_ids').optional().isArray(),
+    body('role_ids.*').isUUID(),
   ],
   validate,
   ctrl.create
 );
 
-router.patch('/:id', authorize('users.update'), [param('id').isUUID()], validate, ctrl.update);
+router.patch(
+  '/:id',
+  authorize('users.update'),
+  [
+    param('id').isUUID(),
+    body('name').optional().trim().notEmpty().isLength({ max: 150 }),
+    body('email').optional().isEmail().normalizeEmail(),
+    body('phone').optional({ nullable: true }).trim().isLength({ max: 50 }),
+    body('user_type').optional().isIn(['internal', 'external']),
+    body('branch_id').optional({ nullable: true }).isUUID(),
+  ],
+  validate,
+  ctrl.update
+);
 
 router.patch(
   '/:id/password',
   authorize('users.update'),
-  [param('id').isUUID(), body('password').isLength({ min: 8 })],
+  [param('id').isUUID(), body('password').isLength({ min: 8, max: 100 })],
   validate,
   ctrl.changePassword
 );
@@ -50,7 +77,11 @@ router.patch(
 router.put(
   '/:id/roles',
   authorize('roles.assign'),
-  [param('id').isUUID(), body('role_ids').isArray()],
+  [
+    param('id').isUUID(),
+    body('role_ids').isArray(),
+    body('role_ids.*').isUUID(),
+  ],
   validate,
   ctrl.assignRoles
 );
