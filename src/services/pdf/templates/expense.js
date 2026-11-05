@@ -30,7 +30,7 @@ async function generateExpense(opts = {}) {
   } = opts;
 
   const { doc, promise } = createPage({
-    size: [595, 500],
+    size: [655, 500],
     margin: 0,
     bufferPages: false,
     info: {
@@ -43,7 +43,7 @@ async function generateExpense(opts = {}) {
   const H = doc.page.height;
   const M = 20;
   const startX = M;
-  const pageWidth = W - M * 2;
+  const { pageWidth, pageHeight, contentWidth, margin } = layout.setupDocument(doc);
 
   const companyData = {
     nameAr: company.nameAr || company.name || '',
@@ -59,35 +59,35 @@ async function generateExpense(opts = {}) {
   // الإطار الخارجي
   doc.save();
   doc
-    .roundedRect(M, M, pageWidth, H - M * 2, 8)
+    .roundedRect(M, M, contentWidth + 40, H - M * 2, 8)
     .lineWidth(1.5)
     .strokeColor(layout.COLORS.primary)
     .stroke();
   doc.restore();
 
   // رأس الشركة
-  let y = layout.drawCompanyHeader(doc, companyData, pageWidth) + 5;
+  let y = layout.drawCompanyHeader(doc, companyData, contentWidth) + 5;
 
   // عنوان السند
   const titleAr = 'سند مصروف';
   const titleEn = 'Expense Voucher';
   const titleW = 200;
   const titleH = 40;
-  const titleX = startX + (pageWidth - titleW) / 2;
+  const titleX =  (W - titleW) / 2;
   const titleY = y;
 
   doc.save();
   doc
     .rect(titleX, titleY, titleW, titleH)
     .lineWidth(1.2)
-    .strokeColor(layout.COLORS.primary)
+    .strokeColor(layout.COLORS.blue)
     .stroke();
   doc.restore();
 
   doc
-    .font('Arabic')
+    .font('Cairo-Bold')
     .fontSize(14)
-    .fillColor(layout.COLORS.primary)
+    .fillColor('#0511FF')
     .text(smartFormat(titleAr), titleX, titleY + 4, {
       width: titleW,
       align: 'center',
@@ -102,17 +102,19 @@ async function generateExpense(opts = {}) {
     });
 
   // معلومات علوية (رقم وتاريخ)
-  const infoRightX = startX + pageWidth - 15;
-
+  const infoRightX =  pageWidth - 15;
+const formattedDate = expenseDate
+  ? expenseDate.split('T')[0].split('-').reverse().join('/')
+  : '—';
   doc
-    .font('Arabic')
+    .font('Cairo')
     .fontSize(9)
     .fillColor(layout.COLORS.text)
-    .text(smartFormat(`رقم المصروف: ${expenseNumber || '—'}`), infoRightX - 200, titleY + 4, {
+    .text(smartFormat(`رقم المصروف: ${expenseNumber || '—'}`), infoRightX - 240, titleY + 4, {
       width: 200,
       align: 'right',
     })
-    .text(smartFormat(`التاريخ: ${expenseDate || '—'}`), infoRightX - 200, titleY + 20, {
+    .text(smartFormat(`التاريخ: ${formattedDate}`), infoRightX - 240, titleY + 20, {
       width: 200,
       align: 'right',
     });
@@ -121,15 +123,15 @@ async function generateExpense(opts = {}) {
   const amountY = titleY + titleH + 15;
 
   doc
-    .font('Arabic')
+    .font('Cairo')
     .fontSize(10)
     .fillColor(layout.COLORS.primary)
-    .text(smartFormat('المبلغ:'), startX + pageWidth - 240, amountY, {
+    .text(smartFormat('المبلغ:'),  pageWidth - 140, amountY, {
       width: 90,
       align: 'right',
     });
 
-  const boxX = startX + pageWidth - 145;
+  const boxX =  pageWidth - 230;
   doc.save();
   doc
     .rect(boxX, amountY - 3, 80, 24)
@@ -156,22 +158,22 @@ async function generateExpense(opts = {}) {
     .text(currencyCode, boxX + 80, amountY + 5, { width: 65, align: 'center' });
 
   // الحقول النصية — بلا جدول
-  const labelX = startX + pageWidth - 90;
-  const valueX = startX + 20;
-  const valueW = pageWidth - 130;
+  const labelX =  pageWidth - 135;
+  const valueX =  20;
+  const valueW = pageWidth - 160;
 
   function drawField(label, value, yPos) {
     doc
-      .font('Arabic')
-      .fontSize(9)
+      .font('Cairo')
+      .fontSize(10)
       .fillColor(layout.COLORS.primary)
-      .text(smartFormat(`${label}:`), labelX, yPos, { width: 70, align: 'right' });
+      .text(smartFormat(`${label}:`), labelX, yPos, { width: 85, align: 'right' });
 
     doc
-      .font('Arabic')
+      .font('Cairo')
       .fontSize(9)
       .fillColor(layout.COLORS.text)
-      .text(smartFormat(value ?? '—'), valueX, yPos - 2, {
+      .text(smartFormat(value ?? '—'), valueX - 11, yPos - 2, {
         width: valueW,
         align: 'right',
         lineGap: 2,
@@ -179,8 +181,8 @@ async function generateExpense(opts = {}) {
 
     doc.save();
     doc
-      .moveTo(valueX, yPos + 13)
-      .lineTo(labelX - 5, yPos + 13)
+      .moveTo(valueX + 15, yPos + 13)
+      .lineTo(labelX , yPos + 13)
       .strokeColor(layout.COLORS.border)
       .lineWidth(0.5)
       .stroke();
@@ -197,43 +199,43 @@ async function generateExpense(opts = {}) {
     `${accountCode || ''}${accountName ? ` - ${accountName}` : ''}`,
     fieldY
   );
-  fieldY = drawField('المورد', supplierName, fieldY);
+  fieldY = drawField('الاسم', supplierName, fieldY);
 
   // طريقة الدفع
   const methodMap = { cash: 'نقداً', bank: 'حوالة', cheque: 'شيك' };
   const methodLabel = methodMap[method] || '—';
 
   doc
-    .font('Arabic')
+    .font('Cairo')
     .fontSize(9)
     .fillColor(layout.COLORS.primary)
-    .text(smartFormat('طريقة الدفع:'), startX + pageWidth - 100, fieldY, {
+    .text(smartFormat('طريقة الدفع:'), labelX, fieldY, {
       width: 85,
       align: 'right',
     });
   doc
-    .font('Arabic')
+    .font('Cairo')
     .fontSize(9)
-    .fillColor(layout.COLORS.text)
-    .text(smartFormat(methodLabel), startX + pageWidth - 195, fieldY, {
+    .fillColor('#FF0505')
+    .text(smartFormat(methodLabel), pageWidth - 225, fieldY, {
       width: 90,
       align: 'right',
     });
 
   // رقم فاتورة المورد
   doc
-    .font('Arabic')
+    .font('Cairo')
     .fontSize(9)
     .fillColor(layout.COLORS.primary)
-    .text(smartFormat('رقم فاتورة المورد:'), startX + 155, fieldY, {
+    .text(smartFormat('رقم المستند:'),  155, fieldY, {
       width: 130,
       align: 'right',
     });
   doc
-    .font('Arabic')
+    .font('Cairo')
     .fontSize(9)
     .fillColor(layout.COLORS.text)
-    .text(smartFormat(externalReference || '—'), startX + 20, fieldY, {
+    .text(smartFormat(externalReference || '—'), 100, fieldY, {
       width: 130,
       align: 'left',
     });
@@ -242,10 +244,10 @@ async function generateExpense(opts = {}) {
 
   // المدفوع والحالة
   doc
-    .font('Arabic')
+    .font('Cairo')
     .fontSize(9)
     .fillColor(layout.COLORS.primary)
-    .text(smartFormat('المدفوع:'), startX + pageWidth - 90, fieldY, {
+    .text(smartFormat('المدفوع:'), labelX, fieldY, {
       width: 80,
       align: 'right',
     });
@@ -253,7 +255,7 @@ async function generateExpense(opts = {}) {
     .font('Helvetica-Bold')
     .fontSize(9)
     .fillColor('#16a34a')
-    .text(`${money(paidAmount)} ${currencyCode}`, startX + pageWidth - 200, fieldY, {
+    .text(`${money(paidAmount)} ${currencyCode}`,  pageWidth - 260, fieldY, {
       width: 105,
       align: 'right',
     });
@@ -267,18 +269,18 @@ async function generateExpense(opts = {}) {
   const currentStatus = statusMap[status] || statusMap.posted;
 
   doc
-    .font('Arabic')
+    .font('Cairo')
     .fontSize(9)
     .fillColor(layout.COLORS.primary)
-    .text(smartFormat('الحالة:'), startX + 155, fieldY, {
+    .text(smartFormat('الحالة:'),  205, fieldY, {
       width: 65,
       align: 'right',
     });
   doc
-    .font('Arabic-Bold')
+    .font('Cairo-Bold')
     .fontSize(9)
     .fillColor(currentStatus.color)
-    .text(smartFormat(currentStatus.label), startX + 20, fieldY, {
+    .text(smartFormat(currentStatus.label),  100, fieldY, {
       width: 130,
       align: 'left',
     });
@@ -286,7 +288,7 @@ async function generateExpense(opts = {}) {
   // المبلغ بالحروف
   const wordsY = fieldY + 25;
   const wordsX = startX + 10;
-  const wordsW = pageWidth - 20;
+  const wordsW = pageWidth - 70;
 
   doc.save();
   doc
@@ -295,7 +297,7 @@ async function generateExpense(opts = {}) {
   doc.restore();
 
   doc
-    .font('Arabic')
+    .font('Cairo')
     .fontSize(8)
     .fillColor('#15803d')
     .text(smartFormat('المبلغ بالحروف:'), wordsX + wordsW - 110, wordsY + 7, {
@@ -304,9 +306,9 @@ async function generateExpense(opts = {}) {
     });
 
   doc
-    .font('Arabic')
+    .font('Cairo')
     .fontSize(8)
-    .fillColor('#166534')
+    .fillColor('#FF0505')
     .text(smartFormat(amountInWords || '—'), wordsX + 10, wordsY + 7, {
       width: wordsW - 130,
       align: 'right',
@@ -330,23 +332,23 @@ async function generateExpense(opts = {}) {
   const sigY = H - M - 40;
 
   doc
-    .font('Arabic')
-    .fontSize(8)
+    .font('Cairo')
+    .fontSize(12)
     .fillColor(layout.COLORS.primary)
-    .text(smartFormat('توقيع المحاسب'), startX + pageWidth - 190, sigY, {
+    .text(smartFormat('توقيع المحاسب'),  pageWidth - 210, sigY, {
       width: 160,
       align: 'right',
     });
   doc
-    .moveTo(startX + pageWidth - 190, sigY + 30)
-    .lineTo(startX + pageWidth - 30, sigY + 30)
+    .moveTo( pageWidth - 180, sigY + 30)
+    .lineTo( pageWidth - 40, sigY + 30)
     .strokeColor(layout.COLORS.primary)
     .lineWidth(0.5)
     .stroke();
 
   doc
-    .font('Arabic')
-    .fontSize(8)
+    .font('Cairo')
+    .fontSize(12)
     .fillColor(layout.COLORS.primary)
     .text(smartFormat('توقيع المستلم'), startX + 30, sigY, {
       width: 160,

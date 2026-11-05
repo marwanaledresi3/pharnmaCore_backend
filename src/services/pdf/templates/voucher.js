@@ -96,7 +96,7 @@ async function generateVoucher(opts = {}) {
 
   doc.font('Cairo-Bold')
     .fontSize(14)
-    .fillColor(COLORS.primary)
+    .fillColor(COLORS.red)
     .text(smartFormat(title), titleX, titleY + 2, {
       width: titleW,
       align: 'center',
@@ -136,7 +136,7 @@ async function generateVoucher(opts = {}) {
   drawLabelValue(
     'رقم السند:',
     voucherNumber,
-    W - M - 165,
+    W - M - 180,
     fieldY,
     155
   );
@@ -144,7 +144,7 @@ async function generateVoucher(opts = {}) {
   drawLabelValue(
     'التاريخ:',
     voucherDate,
-    W - M - 165,
+    W - M - 180,
     fieldY + 20,
     155
   );
@@ -155,7 +155,7 @@ async function generateVoucher(opts = {}) {
   doc.font('Cairo-Bold')
     .fontSize(11)
     .fillColor(COLORS.primary)
-    .text(smartFormat('المبلغ:'), W - M - 75, y, {
+    .text(smartFormat('المبلغ:'), W - M - 90, y, {
       width: 65,
       align: 'right',
     });
@@ -203,9 +203,9 @@ async function generateVoucher(opts = {}) {
     valueWidth,
   }) {
     doc.font('Cairo-Bold')
-      .fontSize(9)
+      .fontSize(10)
       .fillColor(COLORS.primary)
-      .text(smartFormat(arabicLabel), W - M - 175, y, {
+      .text(smartFormat(arabicLabel), W - M - 185, y, {
         width: 160,
         align: 'right',
       });
@@ -213,14 +213,14 @@ async function generateVoucher(opts = {}) {
     doc.font('Helvetica-Bold')
       .fontSize(9)
       .fillColor(COLORS.primary)
-      .text(englishLabel, M + 5, y, {
+      .text(englishLabel, M + 15, y, {
         width: 120,
         align: 'left',
       });
 
     // الخط المنقط
     doc.save()
-      .moveTo(valueX, y + 14)
+      .moveTo(valueX - 15, y + 14)
       .lineTo(valueX + valueWidth, y + 14)
       .strokeColor(COLORS.primary)
       .lineWidth(0.5)
@@ -284,7 +284,7 @@ async function generateVoucher(opts = {}) {
   doc.font('Helvetica-Bold')
     .fontSize(9)
     .fillColor(COLORS.primary)
-    .text('Cheque No.', M + 5, lineY, {
+    .text('Cheque No.', M + 15, lineY, {
       width: 80,
     });
 
@@ -318,14 +318,23 @@ async function generateVoucher(opts = {}) {
     .stroke()
     .undash();
 
+// رسم علامة الصح باللون الأخضر
+doc.save();
+
+
+
   if (method === 'cash') {
-    doc.font('Helvetica-Bold')
-      .fontSize(12)
-      .fillColor(COLORS.success)
-      .text('✓', M + 325, lineY - 2, {
-        width: 120,
-        align: 'center',
-      });
+    doc
+  .moveTo(M + 365, lineY + 7)
+  .lineTo(M + 373, lineY + 15)
+  .lineTo(M + 389, lineY - 2)
+  .lineWidth(2)
+  .strokeColor(COLORS.success)
+  .lineCap('round')
+  .lineJoin('round')
+  .stroke();
+
+doc.restore();
   }
 
   // البنك والتاريخ
@@ -334,7 +343,7 @@ async function generateVoucher(opts = {}) {
   doc.font('Helvetica-Bold')
     .fontSize(9)
     .fillColor(COLORS.primary)
-    .text('Bank', M + 5, lineY, {
+    .text('Bank', M + 15, lineY, {
       width: 50,
     });
 
@@ -381,7 +390,7 @@ async function generateVoucher(opts = {}) {
   doc.font('Cairo-Bold')
     .fontSize(9)
     .fillColor(COLORS.primary)
-    .text(smartFormat('نقداً'), W - M - 65, lineY - 22, {
+    .text(smartFormat('نقداً'), W - M - 75, lineY - 22, {
       width: 45,
       align: 'right',
     });
@@ -389,7 +398,7 @@ async function generateVoucher(opts = {}) {
   doc.font('Cairo-Bold')
     .fontSize(9)
     .fillColor(COLORS.primary)
-    .text(smartFormat('مؤرخ'), W - M - 65, lineY, {
+    .text(smartFormat('مؤرخ'), W - M - 75, lineY, {
       width: 45,
       align: 'right',
     });
@@ -424,7 +433,7 @@ async function generateVoucher(opts = {}) {
         doc,
         'نظام إدارة المستندات',
         contentWidth,
-        pageHeight - 15
+        pageHeight - 23
       );
     }
   

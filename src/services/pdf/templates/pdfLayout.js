@@ -8,6 +8,15 @@ const fontPath = path.join(
   __dirname, '..', '..', '..', 'assets', 'fonts', 'Cairo-Regular.ttf'
 );
 
+
+const ARABIC_FONT = path.resolve(
+  __dirname,
+  '../../../assets/fonts/Cairo-Regular.ttf'
+);
+
+if (!fs.existsSync(ARABIC_FONT)) {
+  throw new Error(`Arabic font not found: ${ARABIC_FONT}`);
+}
 const SHARED_LOGO_PATH = path.join(
   __dirname, '..', '..', '..', 'assets', 'images', 'shared-logo.png'
 );
@@ -24,11 +33,15 @@ const COLORS = {
 };
 
 function setupDocument(doc) {
-  if (!fs.existsSync(fontPath)) {
-    throw new Error(`Arabic font not found: ${fontPath}`);
+  if (!fs.existsSync(FONT_REGULAR)) {
+    throw new Error(`Arabic font not found: ${FONT_REGULAR}`);
   }
 
-  doc.registerFont('Arabic', fontPath);
+  doc.registerFont('Arabic', FONT_REGULAR);
+
+  if (fs.existsSync(FONT_BOLD)) {
+    doc.registerFont('Arabic-Bold', FONT_BOLD);
+  }
 
   return {
     pageWidth: doc.page.width,
@@ -43,7 +56,7 @@ function reverseWords(text) {
 }
 
 function arabic(doc, text, x, y, width, options = {}) {
-  doc.font('Arabic')
+  doc.font(FONT_REGULAR)
     .fontSize(options.fontSize || 10)
     .fillColor(options.color || COLORS.text)
     .text(smartFormat(text), x, y, {
@@ -210,7 +223,7 @@ function drawCompanyLogo(doc, company, logoX, startY) {
     .lineWidth(0.5)
     .stroke();
   doc
-    .font('Arabic')
+    .font(FONT_REGULAR)
     .fontSize(22)
     .fillColor(COLORS.primary)
     .text('PC', imgX, logoY + 28, { width: logoSize, align: 'center' });
@@ -248,7 +261,7 @@ function drawTableHeader(doc, columns, x, y, tableWidth, rowHeight = 35) {
   for (const column of columns) {
     columnX -= column.width;
 
-    doc.font('Arabic')
+    doc.font(FONT_REGULAR)
       .fontSize(9)
       .fillColor(COLORS.white)
       .text(column.title, columnX + 2, y + 11, {
@@ -274,7 +287,7 @@ function drawTableRow(doc, columns, values, x, y, rowHeight = 35) {
 
     const value = values[column.key] ?? '';
 
-    if (column.type === 'arabic') {
+    if (column.type === FONT_REGULAR) {
       arabic(
         doc,
         value,

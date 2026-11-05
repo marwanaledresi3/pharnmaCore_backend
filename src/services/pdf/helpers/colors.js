@@ -10,6 +10,8 @@ const COLORS = {
   text: '#1e293b',
   muted: '#64748b',
   border: '#cbd5e1',
+  red: '#FF0505',
+  blue: '#0511FF',
 };
 
 module.exports = { COLORS };

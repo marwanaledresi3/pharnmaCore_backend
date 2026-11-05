@@ -34,8 +34,7 @@ build/
 project-structure.txt
 test.js
 structure.txt
-app/uploads.zip
-v1
+
 AdminDashboardService.js
 OrganizationLinkAdminService.js
 OrganizationAdminService.js
@@ -55,3 +54,4 @@ test-confirm-phase5.js
 ControllerPdf/
 pdfService1.js
 pdfService2.js
+

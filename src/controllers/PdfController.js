@@ -1,7 +1,7 @@
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../errors/ApiError');
 const { resolveLogoAsync } = require('../services/pdf/helpers/logoResolver');
-
+const { formatDate } = require('../utils/dateUtils');
 const { numToArabicWords } = require('../utils/numberToArabicWords');
 const { pool } = require('../config/pool');
 const {
@@ -125,8 +125,8 @@ const invoice = asyncHandler(async (req, res) => {
         tax: it.tax_rate > 0 ? `${it.tax_rate}%` : '—',
         total: it.line_total,
         batch_number: it.batch_number || null,
-        expiry_date: it.expiry_date
-          ? String(it.expiry_date).slice(0, 10)
+        expiry_date: formatDate(it.expiry_date)
+          ? formatDate(it.expiry_date)
           : null,
       };
     });
@@ -148,9 +148,7 @@ const invoice = asyncHandler(async (req, res) => {
       company: companyData,
       docType: isSale ? 'sale_invoice' : 'purchase_invoice',
       docNumber: inv.invoice_number,
-      docDate: inv.invoice_date
-        ? String(inv.invoice_date).slice(0, 10)
-        : new Date().toISOString().slice(0, 10),
+      docDate: formatDate(inv.invoice_date),
       partyTitle: isSale ? 'العميل' : 'المورد',
       party,
       items,
@@ -238,7 +236,7 @@ const returnDoc = asyncHandler(async (req, res) => {
       company: companyData,
       docType: isSale ? 'sale_return' : 'purchase_return',
       docNumber: ret.return_number,
-      docDate: String(ret.return_date).slice(0, 10),
+      docDate: formatDate(ret.return_date),
       partyTitle: isSale ? 'العميل' : 'المورد',
       party,
       items,
@@ -294,14 +292,14 @@ const payment = asyncHandler(async (req, res) => {
       company: companyData,
       voucherType: isReceive ? 'receipt' : 'payment',
       voucherNumber: pay.voucher_number || `PAY-${id.slice(0, 8)}`,
-      voucherDate: String(pay.payment_date).slice(0, 10),
+      voucherDate: formatDate(pay.payment_date),
       amount: pay.amount,
       amountInWords,
       partyName: pay.party_name || '—',
       settlementOf: pay.description || (pay.invoice_number ? `سداد فاتورة #${pay.invoice_number}` : '—'),
       method: pay.method || 'cash',
       chequeNumber: pay.cheque_number || null,
-      chequeDate: pay.cheque_date ? String(pay.cheque_date).slice(0, 10) : null,
+      chequeDate: formatDate(pay.cheque_date) ? formatDate(pay.cheque_date) : null,
       bankName: pay.bank_name || null,
       currencyCode: pay.currency_code || 'YER',
       externalReference: pay.external_reference || null,
@@ -366,7 +364,7 @@ const purchaseOrder = asyncHandler(async (req, res) => {
       company: companyData,
       docType: 'report',  // سنستخدم نوعاً عاماً
       docNumber: po.order_number,
-      docDate: String(po.order_date).slice(0, 10),
+      docDate: formatDate(po.order_date),
       partyTitle: 'المورد',
       party: {
         name: po.supplier_name,
@@ -449,7 +447,7 @@ const deliveryNote = asyncHandler(async (req, res) => {
       company: companyData,
       docType: 'delivery_note',
       docNumber: po.order_number,
-      docDate: new Date().toISOString().slice(0, 10),
+      docDate: formatDate(new Date()),
       partyTitle: 'المورد',
       party: {
         name: po.supplier_name,
@@ -462,7 +460,7 @@ const deliveryNote = asyncHandler(async (req, res) => {
       ],
       currencyCode: po.currency_code,
       extraInfo: {
-        'تاريخ أمر الشراء': String(po.order_date).slice(0, 10),
+        'تاريخ أمر الشراء': formatDate(po.order_date),
       },
       qrData,
     });
@@ -594,7 +592,7 @@ const statement = asyncHandler(async (req, res) => {
       if (partyType === 'customer' && isSale) {
         // فاتورة مبيعات على العميل — مدين
         transactions.push({
-          date: inv.invoice_date ? String(inv.invoice_date).slice(0, 10) : '—',
+          date: formatDate(inv.invoice_date) ? formatDate(inv.invoice_date) : '—',
           doc_number: inv.invoice_number,
           description: 'عليكم فاتورة مبيعات',
           debit: total,
@@ -604,7 +602,7 @@ const statement = asyncHandler(async (req, res) => {
       } else if (partyType === 'supplier' && !isSale && !isPaid) {
         // فاتورة مشتريات علينا للمورد — دائن
         transactions.push({
-          date: inv.invoice_date ? String(inv.invoice_date).slice(0, 10) : '—',
+          date: formatDate(inv.invoice_date) ? formatDate(inv.invoice_date) : '—',
           doc_number: inv.invoice_number,
           description: 'لديكم فاتورة مشتريات',
           debit: 0,
@@ -622,7 +620,7 @@ const statement = asyncHandler(async (req, res) => {
         // سند قبض — دائن (يخفض رصيد العميل)
         const desc = ` لكم سند قبض ${p.description?.trim()}`;
         transactions.push({
-          date: p.payment_date ? String(p.payment_date).slice(0, 10) : '—',
+          date: formatDate(p.payment_date) ? formatDate(p.payment_date) : '—',
           doc_number: p.voucher_number || p.reference || '—',
           description: desc,
           debit: 0,
@@ -633,7 +631,7 @@ const statement = asyncHandler(async (req, res) => {
         // سند صرف — مدين (يخفض ديننا للمورد)
         const desc =`عليكم سند صرف ${p.description?.trim()} `;
         transactions.push({
-          date: p.payment_date ? String(p.payment_date).slice(0, 10) : '—',
+          date: formatDate(p.payment_date) ? formatDate(p.payment_date) : '—',
           doc_number: p.voucher_number || p.reference || '—',
           description: desc,
           debit: amt,
@@ -662,7 +660,7 @@ const statement = asyncHandler(async (req, res) => {
       company: companyData,
       docType: 'statement',
       docNumber: `STMT-${id.slice(0, 8)}`,
-      docDate: new Date().toISOString().slice(0, 10),
+      docDate: formatDate(new Date()),
       partyTitle: partyType === 'customer' ? 'العميل' : 'المورد',
       party,
       items: transactions,
@@ -725,11 +723,10 @@ const expense = asyncHandler(async (req, res) => {
     const amountInWords = `${numToArabicWords(exp.amount)} ${
       exp.currency_code === 'YER' ? 'ريال يمني' : exp.currency_code
     } فقط لا غير`;
-
     const buffer = await generateExpense({
       company: companyData,
       expenseNumber: exp.expense_number,
-      expenseDate: exp.expense_date ? String(exp.expense_date).slice(0, 10) : '',
+      expenseDate: formatDate(exp.expense_date),
       expenseCategory: exp.expense_category,
       accountCode: exp.account_code,
       accountName: exp.account_name,
@@ -782,7 +779,7 @@ const trialBalance = asyncHandler(async (req, res) => {
       company: companyData,
       docType: 'trial_balance',
       docNumber: `TB-${Date.now().toString().slice(-6)}`,
-      docDate: date_to || new Date().toISOString().slice(0, 10),
+      docDate: (date_to) || new Date().toISOString().slice(0, 10),
       partyTitle: 'الفترة',
       party: { name: `${date_from || '—'} إلى ${date_to || '—'}` },
       items,
