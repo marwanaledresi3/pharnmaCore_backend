@@ -1,7 +1,7 @@
 // routes/connectionRoutes.js
 const express = require('express');
 const router = express.Router();
-const ConnectionController = require('../controllers/ConnectionController');
+const ConnectionController = require('../controllers/connectionController');
 const asyncHandler = require('../utils/asyncHandler');
 const validate = require('../middlewares/validateMiddleware');
 const {
