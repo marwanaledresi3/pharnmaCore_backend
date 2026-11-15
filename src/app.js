@@ -1,43 +1,124 @@
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
-const { notFound, errorHandler } = require('./middlewares/errorHandler');
 
-const app = express();
-const swaggerUi = require('swagger-ui-express');
-const swaggerSpec = require('./config/swagger');
+'use strict';
 
-// ✅ 1) helmet أولاً — مع استثناء Swagger من CSP
-app.use(helmet({
-  contentSecurityPolicy: false,  // ⚠️ الأبسط — يعطّل CSP كلياً
-  // أو استخدم الحل المتقدم بالأسفل
-}));
+let app;
 
-// ✅ 2) بقية الميدلوير
-app.use(cors());
-app.use(express.json());
-app.use(morgan('dev'));
+try {
 
-// ✅ 3) Swagger UI — بعد helmet
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
-  customSiteTitle: 'OnixEdres API Docs',
-  swaggerOptions: {
-    persistAuthorization: true,
-    displayRequestDuration: true,
-    docExpansion: 'none',
-    filter: true,
-  },
-}));
+  const express = require('express');
+  const cors = require('cors');
+  const helmet = require('helmet');
+  const morgan = require('morgan');
 
-app.get('/health', (req, res) =>
-  res.json({ status: 'OK', timestamp: new Date().toISOString() })
-);
+  const swaggerUi = require('swagger-ui-express');
+  const swaggerSpec = require('./config/swagger');
 
-// ✅ 4) Routes
-app.use('/api/v1', require('./routes'));
+  const {
+    notFound,
+    errorHandler,
+  } = require('./middlewares/errorHandler');
 
-app.use(notFound);
-app.use(errorHandler);
+  // ═══════════════════════════════════════════════════════
+  // 2) Create Express App
+  // ═══════════════════════════════════════════════════════
+
+  app = express();
+
+
+  // ═══════════════════════════════════════════════════════
+  // 3) Security Middleware
+  // ═══════════════════════════════════════════════════════
+
+  app.use(helmet({
+    contentSecurityPolicy: false,
+  }));
+
+  // ═══════════════════════════════════════════════════════
+  // 4) Global Middleware
+  // ═══════════════════════════════════════════════════════
+
+  app.use(cors());
+  app.use(express.json());
+  app.use(morgan('dev'));
+
+  console.log('✅ [APP] Middlewares initialized');
+
+  // ═══════════════════════════════════════════════════════
+  // 5) Swagger Documentation
+  // ═══════════════════════════════════════════════════════
+
+  app.use(
+    '/api-docs',
+    swaggerUi.serve,
+    swaggerUi.setup(swaggerSpec, {
+      customSiteTitle: 'OnixEdres API Docs',
+      swaggerOptions: {
+        persistAuthorization: true,
+        displayRequestDuration: true,
+        docExpansion: 'none',
+        filter: true,
+      },
+    })
+  );
+
+
+  // ═══════════════════════════════════════════════════════
+  // 6) Health Check
+  // ═══════════════════════════════════════════════════════
+
+  app.get('/health', (req, res) => {
+    res.json({
+      status: 'OK',
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════
+  // 7) API Routes
+  // ═══════════════════════════════════════════════════════
+
+  console.log('📦 [APP] Loading API routes...');
+
+  app.use('/api/v1', require('./routes'));
+
+  console.log('✅ [APP] API routes loaded successfully');
+
+  // ═══════════════════════════════════════════════════════
+  // 8) Error Handling
+  // ═══════════════════════════════════════════════════════
+
+  app.use(notFound);
+  app.use(errorHandler);
+
+  console.log('✅ [APP] Error handlers initialized');
+
+  // ═══════════════════════════════════════════════════════
+  // Application Ready
+  // ═══════════════════════════════════════════════════════
+
+  console.log('🎉 [APP] Application initialized successfully');
+
+} catch (error) {
+  console.error('\n');
+  console.error('════════════════════════════════════════════');
+  console.error('❌ APPLICATION INITIALIZATION FAILED');
+  console.error('════════════════════════════════════════════');
+
+  console.error('📌 Error Name:', error?.name || 'Unknown');
+  console.error('📌 Error Message:', error?.message || error);
+  console.error('📌 Full Error Stack:');
+  console.error(error?.stack || error);
+
+  if (error?.details) {
+    console.error('📌 Error Details:', error.details);
+  }
+
+  console.error('════════════════════════════════════════════');
+  console.error('❌ Application startup aborted');
+  console.error('════════════════════════════════════════════\n');
+
+  // أوقف التشغيل حتى لا يعمل التطبيق بحالة غير سليمة
+  throw error;
+}
 
 module.exports = app;

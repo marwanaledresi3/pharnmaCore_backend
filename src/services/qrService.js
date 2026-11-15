@@ -1,5 +1,5 @@
 require('dotenv').config();
-const crypto = require('bcryptjs');
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const QRCode = require('qrcode');
 const ApiError = require('../errors/ApiError');
