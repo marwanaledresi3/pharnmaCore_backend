@@ -1,21 +1,45 @@
+// routes/accountRoutes.js
 const router = require('express').Router();
 const ctrl = require('../controllers/AccountController');
-const { authenticate, requireCompany, authorize } = require('../middlewares/authMiddleware');
+const {
+  authenticate,
+  requireCompany,
+  authorize,
+} = require('../middlewares/authMiddleware');
 const validate = require('../middlewares/validateMiddleware');
 const { body, param, query } = require('express-validator');
 
 router.use(authenticate, requireCompany);
 
-// === قراءة ===
+// ═══════════════════════════════════════════════════════════════════════════
+// الثوابت
+// ═══════════════════════════════════════════════════════════════════════════
+
+const ACCOUNT_TYPES = [
+  'asset',
+  'liability',
+  'equity',
+  'revenue',
+  'expense',
+];
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Routes — Read
+// ═══════════════════════════════════════════════════════════════════════════
+
 router.get('/tree', authorize('accounts.view'), ctrl.getTree);
 
 router.get(
   '/',
   authorize('accounts.view'),
   [
-    query('type').optional().isIn(['asset', 'liability', 'equity', 'revenue', 'expense']),
-    query('is_active').optional().isBoolean(),
-    query('search').optional().trim(),
+    query('type').optional().isIn(ACCOUNT_TYPES),
+    query('is_active').optional().isIn(['true', 'false']),
+    query('search')
+      .optional()
+      .isString()
+      .trim()
+      .isLength({ max: 200 }),
   ],
   validate,
   ctrl.list
@@ -43,14 +67,17 @@ router.get(
   ctrl.getLedger
 );
 
-// === كتابة ===
+// ═══════════════════════════════════════════════════════════════════════════
+// Routes — Write
+// ═══════════════════════════════════════════════════════════════════════════
+
 router.post(
   '/',
   authorize('accounts.create'),
   [
     body('code').trim().notEmpty().isLength({ max: 20 }),
     body('name').trim().notEmpty().isLength({ max: 150 }),
-    body('account_type').isIn(['asset', 'liability', 'equity', 'revenue', 'expense']),
+    body('account_type').isIn(ACCOUNT_TYPES),
     body('parent_id').optional({ nullable: true }).isUUID(),
   ],
   validate,
@@ -74,7 +101,10 @@ router.patch(
 router.patch(
   '/:id/status',
   authorize('accounts.update'),
-  [param('id').isUUID(), body('is_active').isBoolean()],
+  [
+    param('id').isUUID(),
+    body('is_active').isBoolean(),
+  ],
   validate,
   ctrl.changeStatus
 );

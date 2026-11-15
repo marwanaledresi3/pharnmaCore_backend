@@ -13,6 +13,7 @@ router.get(
     query('is_active').optional().isBoolean(),
     query('user_type').optional().isIn(['internal', 'external']),
     query('branch_id').optional({ nullable: true }).isUUID(),
+    query('unassigned').optional().isBoolean(),
     query('page').optional().isInt({ min: 1 }),
     query('limit').optional().isInt({ min: 1, max: 100 }),
     query('search').optional().trim().isLength({ max: 100 }),

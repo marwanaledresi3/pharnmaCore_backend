@@ -1,53 +1,55 @@
+// services/purchaseOrder/helpers/accounts.js
 const ApiError = require('../../../errors/ApiError');
 
-/**
- * أكواد حسابات المشتري (أوامر الشراء):
- * - 113 = مخزون (أصل)
- * - 211 = ذمم موردين (التزام)
- * - 114 = ضريبة مدخلات (أصل)
- */
+const CODES = {
+  cash_box: '1111',
+  bank: '1112',
+  inventory: '113',
+  receivable: '112',
+  payable: '211',
+  vat_input: '114',
+  vat_output: '213',
+  sales_revenue: '411',
+  cogs: '511',
+};
+
 async function getBuyerAccounts(client, companyId) {
   return getAccountsByCodes(client, companyId, {
-    inventory: '113',
-    payable: '211',
-    vat_input: '114',
+    inventory: CODES.inventory,
+    payable: CODES.payable,
+    vat_input: CODES.vat_input,
   });
 }
 
-/**
- * أكواد حسابات المورد (فواتير المبيعات):
- * - 112 = ذمم عملاء (أصل)
- * - 411 = إيرادات مبيعات (إيراد)
- * - 213 = ضريبة مخرجات (التزام)
- * - 511 = تكلفة مبيعات (مصروف)
- * - 113 = مخزون (أصل)
- */
 async function getSupplierAccounts(client, companyId) {
   return getAccountsByCodes(client, companyId, {
-    receivable: '112',
-    sales_revenue: '411',
-    vat_output: '213',
-    cogs: '511',
-    inventory: '113',
+    receivable: CODES.receivable,
+    sales_revenue: CODES.sales_revenue,
+    vat_output: CODES.vat_output,
+    cogs: CODES.cogs,
+    inventory: CODES.inventory,
   });
 }
 
-async function getCashAccount(client, companyId) {
+async function getCashAccount(client, companyId, method = 'cash') {
+  const m = String(method || 'cash').toLowerCase();
+  const useBank = ['bank', 'cheque', 'card', 'wallet'].includes(m);
+  const code = useBank ? CODES.bank : CODES.cash_box;
+
   const r = await client.query(
-    `SELECT id FROM chart_of_accounts
-     WHERE company_id = $1 AND code = '111' LIMIT 1`,
-    [companyId]
+    `SELECT id FROM chart_of_accounts WHERE company_id = $1 AND code = $2 AND is_active = TRUE LIMIT 1`,
+    [companyId, code]
   );
+
   if (!r.rowCount) {
-    throw new ApiError(500, `Cash account 111 not found for company ${companyId}`);
+    throw new ApiError(500, `Cash/Bank account ${code} (${useBank ? 'bank' : 'cash'}) not found for company ${companyId}.`);
   }
   return r.rows[0].id;
 }
 
 async function getAccountsByCodes(client, companyId, codes) {
   const r = await client.query(
-    `SELECT code, id FROM chart_of_accounts
-     WHERE company_id = $1 AND code = ANY($2::text[])`,
+    `SELECT code, id FROM chart_of_accounts WHERE company_id = $1 AND code = ANY($2::text[]) AND is_active = TRUE`,
     [companyId, Object.values(codes)]
   );
 
@@ -59,18 +61,10 @@ async function getAccountsByCodes(client, companyId, codes) {
 
   for (const [key, code] of Object.entries(codes)) {
     if (!map[key]) {
-      throw new ApiError(
-        500,
-        `Required account ${code} not found for company ${companyId}`
-      );
+      throw new ApiError(500, `Required account ${code} (${key}) not found or inactive for company ${companyId}`);
     }
   }
   return map;
 }
 
-module.exports = {
-  getBuyerAccounts,
-  getSupplierAccounts,
-  getCashAccount,
-  getAccountsByCodes,
-};
+module.exports = { CODES, getBuyerAccounts, getSupplierAccounts, getCashAccount, getAccountsByCodes };

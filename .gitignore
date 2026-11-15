@@ -32,7 +32,10 @@ build/
 
 *.log
 project-structure.txt
+project_structure.txt
 test.js
+test-db.js
+test-db-pg.js
 structure.txt
 
 AdminDashboardService.js

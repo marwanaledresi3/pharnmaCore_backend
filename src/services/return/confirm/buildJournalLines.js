@@ -1,12 +1,19 @@
+// services/return/confirm/buildJournalLines.js
 const { round2 } = require('../helpers/rounding');
 
 /**
- * يبني سطور القيد المحاسبي.
+ * يبني سطور القيد المحاسبي للمرتجع.
+ *
+ * ⚠️ totalInventoryChange يجب أن يكون بالعملة الأساسية.
+ *    applyInventory يُرجعه بالعملة الأساسية.
+ *
+ * المنطق:
+ * - مرتجع بيع: عكس قيد البيع + إرجاع المخزون
+ * - مرتجع شراء: عكس قيد الشراء
+ *
+ * ✅ يستخدم return_type === 'sale' (بدون s) — متوافق مع CHECK
  */
 function buildJournalLines(ret, accounts, totalInventoryChange) {
-  console.log('[confirm:3] buildJournalLines START');
-  console.log('[confirm:3] return_type =', ret.return_type, '| totalInventoryChange =', totalInventoryChange);
-
   const rate = Number(ret.exchange_rate) || 1;
   const totalBase = round2(Number(ret.total) * rate);
   const subtotalBase = round2(Number(ret.subtotal) * rate);
@@ -14,17 +21,15 @@ function buildJournalLines(ret, accounts, totalInventoryChange) {
 
   const lines = [];
 
-  if (ret.return_type === 'sales') {
-    // مرتجع بيع → عكس قيد البيع:
-    //   مدين: إيراد (subtotal)
-    //   مدين: ضريبة (tax)
-    //     دائن: ذمم مدينة (total)
+  // ═══ مرتجع بيع ═══════════════════════════════════════════════════
+  if (ret.return_type === 'sale') {
     lines.push({
       account_id: accounts.revenue,
       debit: subtotalBase,
       credit: 0,
       description: 'مرتجع مبيعات',
     });
+
     if (taxBase > 0) {
       lines.push({
         account_id: accounts.vat_output,
@@ -33,6 +38,7 @@ function buildJournalLines(ret, accounts, totalInventoryChange) {
         description: 'ضريبة مرتجعة',
       });
     }
+
     lines.push({
       account_id: accounts.receivable,
       credit: totalBase,
@@ -40,7 +46,7 @@ function buildJournalLines(ret, accounts, totalInventoryChange) {
       description: `مرتجع فاتورة ${ret.return_number}`,
     });
 
-    // إرجاع المخزون → مدين مخزون / دائن COGS
+    // إرجاع المخزون → Dr مخزون / Cr COGS
     if (totalInventoryChange > 0) {
       lines.push(
         {
@@ -58,22 +64,24 @@ function buildJournalLines(ret, accounts, totalInventoryChange) {
       );
     }
   } else {
-    // مرتجع شراء → عكس قيد الشراء:
-    //   مدين: ذمم دائنة (total)
-    //     دائن: مخزون (subtotal)
-    //     دائن: ضريبة مدخلات (tax)
+    // ═══ مرتجع شراء ═══════════════════════════════════════════════
     lines.push({
       account_id: accounts.payable,
       debit: totalBase,
       credit: 0,
       description: `مرتجع شراء ${ret.return_number}`,
     });
+
+    // ✅ استخدام totalInventoryChange (القيمة الدفترية) بدلاً من subtotalBase
+    const inventoryCredit = totalInventoryChange > 0 ? totalInventoryChange : subtotalBase;
+
     lines.push({
       account_id: accounts.inventory,
-      credit: subtotalBase,
+      credit: inventoryCredit,
       debit: 0,
       description: 'مرتجع مخزون',
     });
+
     if (taxBase > 0) {
       lines.push({
         account_id: accounts.vat_input,
@@ -82,17 +90,40 @@ function buildJournalLines(ret, accounts, totalInventoryChange) {
         description: 'ضريبة مدخلات مرتجعة',
       });
     }
+
+    // ✅ إذا كان هناك فرق بين inventoryCredit و subtotalBase، نضيفه لحساب فرق
+    const diff = round2(subtotalBase - inventoryCredit);
+    if (Math.abs(diff) > 0.01) {
+      // نضيف الفرق إلى حساب الفرق (إذا وُجد) أو نتجاهله
+      // ⚠️ هنا نفترض أن الفرق يُسجّل في cogs (لأنه فرق تكلفة)
+      if (diff > 0) {
+        // inventoryCredit < subtotalBase → نحتاج debit إضافي
+        lines.push({
+          account_id: accounts.cogs,
+          debit: diff,
+          credit: 0,
+          description: 'فرق تكلفة مرتجع',
+        });
+      } else {
+        // inventoryCredit > subtotalBase → نحتاج credit إضافي
+        lines.push({
+          account_id: accounts.cogs,
+          credit: Math.abs(diff),
+          debit: 0,
+          description: 'فرق تكلفة مرتجع',
+        });
+      }
+    }
   }
 
-  // تحقق من التوازن
-  const totalDebit = lines.reduce((s, l) => s + Number(l.debit), 0);
-  const totalCredit = lines.reduce((s, l) => s + Number(l.credit), 0);
-
-  console.log('[confirm:3] debit =', round2(totalDebit), '| credit =', round2(totalCredit));
+  // ═══ تحقق من التوازن ═════════════════════════════════════════════
+  const totalDebit = round2(lines.reduce((s, l) => s + Number(l.debit || 0), 0));
+  const totalCredit = round2(lines.reduce((s, l) => s + Number(l.credit || 0), 0));
 
   if (Math.abs(totalDebit - totalCredit) > 0.01) {
     throw new Error(
-      `Journal entry not balanced: debit=${totalDebit}, credit=${totalCredit}`
+      `Journal entry not balanced: debit=${totalDebit}, credit=${totalCredit} ` +
+      `(return ${ret.return_number}, type=${ret.return_type})`
     );
   }
 

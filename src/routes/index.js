@@ -4,7 +4,19 @@ const postRoutes = require('./postRoutes');
 const globalProductRoutes = require('./globalProductRoutes');
 const expenseRoutes = require('./expenseRoutes');
 const branchRoutes = require('./branchRoutes');
-
+const b2bRoutes = require('./b2bRoutes');
+const postsRoutes = require('./postsRoutes');
+const unitsRoutes = require('./unitsRoutes');  
+ 
+router.use('/goods-receipts', require('./goodsReceiptRoutes'));
+router.use('/delivery-notes', require('./deliveryNoteRoutes'));
+router.use('/notes', require('./noteRoutes'));
+router.use('/stock-adjustments', require('./stockAdjustmentRoutes'));
+router.use('/stock-transfers', require('./stockTransferRoutes'));
+router.use('/documents', require('./documentsRoutes'));
+router.use('/units', unitsRoutes);
+router.use('/b2b', b2bRoutes);
+router.use('/posts', postsRoutes);
 router.use('/branches', branchRoutes);
 router.use('/expenses', expenseRoutes);
 router.use('/global-products', globalProductRoutes);

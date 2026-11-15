@@ -81,11 +81,13 @@ const registerCompany = asyncHandler(async (req, res) => {
  */
 const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
-  const user = await User.findByEmail(email);
-  if (!user) throw new ApiError(401, 'Invalid credentials');
+  try{
+    const user = await User.findByEmail(email);
+    if (!user) {
+      throw new ApiError(401, 'Invalid credentials');
+    }
   if (!user.is_active) throw new ApiError(403, 'Account is inactive');
-
-  const ok = await passwordUtil.compare(password, user.password_hash);
+    const ok = await passwordUtil.compare(password, user.password_hash);
   if (!ok) throw new ApiError(401, 'Invalid credentials');
 
   await pool.query(`UPDATE users SET last_login = NOW() WHERE id = $1`, [user.id]);
@@ -93,6 +95,10 @@ const login = asyncHandler(async (req, res) => {
 
   const token = signToken({ sub: user.id, company_id: user.company_id });
   res.json({ success: true, data: { user, token } });
+  } catch (error) {
+    // console.log('Login error:', error);
+    throw new ApiError(500, 'Internal server error');
+  }
 });
 
 /**

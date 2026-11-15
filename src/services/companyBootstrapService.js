@@ -3,7 +3,7 @@ const Account = require('../models/Account');
 const Role = require('../models/Role');
 const defaultAccounts = require('../data/defaultChartOfAccounts');
 const defaultRoles = require('../data/defaultRoles');
-
+const settingsService = require('./settingsService');
 /**
  * ينشئ كل الأساسيات لشركة جديدة داخل transaction موجودة
  * @param {Object} client - عميل PostgreSQL (من نفس الـ transaction)
@@ -136,33 +136,9 @@ const createDefaultRoles = async (client, companyId) => {
 /**
  * إعدادات الشركة الافتراضية
  */
-const createDefaultSettings = async (client, companyId, options) => {
-  const settings = [
-  { key: 'timezone',       value: JSON.stringify('Asia/Aden') },
-  { key: 'date_format',    value: JSON.stringify('YYYY-MM-DD') },
-  { key: 'invoice_prefix', value: JSON.stringify('INV-') },
-  { key: 'order_prefix',   value: JSON.stringify('SO-') },
-  { key: 'fiscal_year_start', value: JSON.stringify('01-01') },
-  { key: 'default_currency',  value: JSON.stringify(options.defaultCurrencyId || null) },
-  // جديد:
-  { key: 'currency_position', value: JSON.stringify('suffix') },     // prefix | suffix
-  { key: 'decimal_places',    value: JSON.stringify(2) },
-  { key: 'default_tax_rate',  value: JSON.stringify(15) },
-  { key: 'invoice_footer',    value: JSON.stringify('شكراً لتعاملكم معنا') },
-  { key: 'low_stock_notify',  value: JSON.stringify(true) },
-  { key: 'expiry_notify_days', value: JSON.stringify(30) },
-  { key: 'invoice_due_days',   value: JSON.stringify(30) },
-];
-
-
-  for (const s of settings) {
-    await client.query(
-      `INSERT INTO settings (company_id, key, value)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (company_id, key) DO NOTHING`,
-      [companyId, s.key, s.value]
-    );
-  }
+const createDefaultSettings = async (client, companyId, options = {}) => {
+  await settingsService.initDefaults(client, companyId, {
+    default_currency: options.defaultCurrencyId || null,
+  });
 };
-
 module.exports = { bootstrap };

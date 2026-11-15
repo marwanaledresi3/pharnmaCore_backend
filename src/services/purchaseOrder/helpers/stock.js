@@ -1,154 +1,169 @@
+// services/purchaseOrder/helpers/stock.js
 const ApiError = require('../../../errors/ApiError');
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
-/**
- * يتحقق أن كل بند في الطلب متوفر في مخزون المورد.
- */
 async function checkSupplierStockAvailability(client, { orderId, supplierCompanyId }) {
   const items = await client.query(
-    `SELECT poi.id, poi.product_id, poi.supplier_product_id, poi.quantity,
-            COALESCE(poi.supplier_product_id, poi.product_id) AS target_product_id
-     FROM purchase_order_items poi
-     WHERE poi.order_id = $1`,
+    `SELECT poi.id, poi.product_id, poi.supplier_product_id, poi.paid_quantity,
+            poi.bonus_quantity, poi.quantity, poi.conversion_factor
+     FROM purchase_order_items poi WHERE poi.order_id = $1`,
     [orderId]
   );
 
   for (const item of items.rows) {
+    const factor = Number(item.conversion_factor) || 1;
+    if (factor <= 0) throw new ApiError(500, `Invalid conversion_factor for item ${item.id}`);
+
+    const isNetwork = Boolean(item.supplier_product_id);
+    const targetProductId = isNetwork ? item.supplier_product_id : item.product_id;
+    const qtyForStock = isNetwork ? Number(item.paid_quantity) : Number(item.quantity);
+
+    if (!Number.isFinite(qtyForStock) || qtyForStock <= 0) {
+      throw new ApiError(500, `Invalid quantity for item ${item.id}`);
+    }
+
+    const requiredBase = qtyForStock * factor;
+
     const total = await client.query(
       `SELECT COALESCE(SUM(quantity), 0)::numeric AS total
        FROM product_batches pb
        JOIN warehouses w ON w.id = pb.warehouse_id
        WHERE pb.product_id = $1 AND w.company_id = $2 AND w.is_active = TRUE
-         AND pb.quantity > 0
-         AND (pb.expiry_date IS NULL OR pb.expiry_date > CURRENT_DATE)`,
-      [item.target_product_id, supplierCompanyId]
+         AND pb.quantity > 0 AND (pb.expiry_date IS NULL OR pb.expiry_date > CURRENT_DATE)`,
+      [targetProductId, supplierCompanyId]
     );
 
     const reserved = await client.query(
       `SELECT COALESCE(SUM(quantity), 0)::numeric AS reserved
        FROM stock_reservations
-       WHERE product_id = $1 AND company_id = $2
-         AND status = 'active'
+       WHERE product_id = $1 AND company_id = $2 AND status = 'active'
          AND (expires_at IS NULL OR expires_at > NOW())`,
-      [item.target_product_id, supplierCompanyId]
+      [targetProductId, supplierCompanyId]
     );
 
     const available = Number(total.rows[0].total) - Number(reserved.rows[0].reserved);
-    const required = Number(item.quantity);
 
-    if (available < required) {
-      throw new ApiError(
-        409,
-        `الكمية غير متوفرة للصنف ${item.target_product_id}: مطلوب ${required}، متاح ${available} (بعد الحجوزات)`
-      );
+    if (available < requiredBase - 0.001) {
+      throw new ApiError(409, `الكمية غير متوفرة للصنف ${targetProductId}: مطلوب ${requiredBase}، متاح ${available} (بعد الحجوزات)`);
     }
   }
 }
 
-/**
- * استلام المشتري + خصم المورد (FIFO).
- */
-async function confirmInventory(client, {
-  order,
-  buyerCompanyId,
-  supplierCompanyId,
-  userId,
-}) {
+async function confirmInventory(client, { order, buyerCompanyId, supplierCompanyId, userId }) {
   const itemsRes = await client.query(
     `SELECT poi.*, p.name AS product_name
      FROM purchase_order_items poi
      JOIN products p ON p.id = poi.product_id
-     WHERE poi.order_id = $1`,
+     WHERE poi.order_id = $1 ORDER BY poi.id`,
     [order.id]
   );
 
-  const buyerWarehouseId = await getDefaultWarehouse(client, buyerCompanyId, 'buyer');
+  if (itemsRes.rowCount === 0) throw new ApiError(500, 'Order has no items');
 
-  let supplierWarehouseId = null;
-  if (supplierCompanyId) {
-    supplierWarehouseId = await getDefaultWarehouse(client, supplierCompanyId, 'supplier');
-  }
+  const buyerWarehouseId = await getDefaultWarehouse(client, buyerCompanyId, 'buyer');
+  const rate = Number(order.exchange_rate) || 1;
 
   let totalCost = 0;
   const buyerBatches = [];
-  const supplierConsumptions = [];
 
   for (const item of itemsRes.rows) {
-    const qty = Number(item.quantity);
-    const unitCost =
-      Number(item.net_unit_price) > 0
-        ? Number(item.net_unit_price)
-        : Number(item.unit_price);
+    const factor = Number(item.conversion_factor) || 1;
+    if (factor <= 0) throw new ApiError(500, `Invalid conversion_factor for item ${item.id}`);
 
-    // ═══ استلام المشتري ═══
+    const baseQty = Number(item.quantity) * factor;
+    if (!Number.isFinite(baseQty) || baseQty <= 0) throw new ApiError(500, `Invalid base quantity for item ${item.id}`);
+
+    const unitCostBase = resolveUnitCostBase(item);
+    const unitCostBaseInBaseCurrency = round2(unitCostBase * rate);
+
     const receipt = await receiveBuyerStock(client, {
-      buyerCompanyId,
-      buyerWarehouseId,
-      order,
-      item,
-      qty,
-      unitCost,
-      userId,
+      buyerCompanyId, buyerWarehouseId, order, item, baseQty,
+      unitCostBase, unitCostBaseInBaseCurrency, rate, userId,
     });
-    buyerBatches.push(receipt);
-    totalCost += round2(unitCost * qty);
 
-   
+    buyerBatches.push(receipt);
+    totalCost += round2(unitCostBase * baseQty);
   }
 
-  return { totalCost, buyerBatches, supplierConsumptions };
+  return { totalCost: round2(totalCost), buyerBatches };
+}
+
+function resolveUnitCostBase(item) {
+  const factor = Number(item.conversion_factor) || 1;
+
+  let pricePerSelectedUnit = Number(item.net_unit_price);
+  if (!Number.isFinite(pricePerSelectedUnit) || pricePerSelectedUnit <= 0) {
+    const lineTotal = Number(item.line_total);
+    const taxAmount = Number(item.tax_amount);
+    const totalQty = Number(item.quantity);
+    if (totalQty > 0 && Number.isFinite(lineTotal) && Number.isFinite(taxAmount)) {
+      pricePerSelectedUnit = round2((lineTotal - taxAmount) / totalQty);
+    } else {
+      pricePerSelectedUnit = Number(item.unit_price);
+    }
+  }
+
+  if (!Number.isFinite(pricePerSelectedUnit) || pricePerSelectedUnit < 0) {
+    throw new ApiError(500, `Invalid price for item ${item.id}`);
+  }
+
+  return round2(pricePerSelectedUnit / factor);
 }
 
 async function getDefaultWarehouse(client, companyId, label) {
   const r = await client.query(
-    `SELECT id FROM warehouses
-     WHERE company_id = $1 AND is_active = TRUE
-     ORDER BY is_default DESC, created_at ASC
-     LIMIT 1`,
+    `SELECT id FROM warehouses WHERE company_id = $1 AND is_active = TRUE
+     ORDER BY is_default DESC, created_at ASC LIMIT 1`,
     [companyId]
   );
-  if (!r.rowCount) {
-    throw new ApiError(400, `No active warehouse for ${label} company ${companyId}`);
-  }
+  if (!r.rowCount) throw new ApiError(400, `No active warehouse for ${label} company ${companyId}`);
   return r.rows[0].id;
 }
 
 async function receiveBuyerStock(client, {
-  buyerCompanyId,
-  buyerWarehouseId,
-  order,
-  item,
-  qty,
-  unitCost,
-  userId,
+  buyerCompanyId, buyerWarehouseId, order, item, baseQty,
+  unitCostBase, unitCostBaseInBaseCurrency, rate, userId,
 }) {
-  const batchNumber =
-    item.batch_number || `PO${order.order_number}-${item.id.slice(0, 8)}`;
-  const expiry = item.expiry_date || '2099-12-31';
+  const batchNumber = resolveBatchNumber(item, order);
+  const expiry = resolveExpiryDate(item);
 
   const existing = await client.query(
-    `SELECT id FROM product_batches
+    `SELECT id, cost_price, cost_price_base, quantity
+     FROM product_batches
      WHERE product_id = $1 AND warehouse_id = $2 AND batch_number = $3
      FOR UPDATE`,
     [item.product_id, buyerWarehouseId, batchNumber]
   );
 
   let batchId;
+
   if (existing.rowCount) {
+    const oldQty = Number(existing.rows[0].quantity) || 0;
+    const oldCostBase = Number(existing.rows[0].cost_price_base) || Number(existing.rows[0].cost_price) || 0;
+    const oldCost = Number(existing.rows[0].cost_price) || 0;
+
+    const newCostBase = (oldQty + baseQty) > 0
+      ? round2((oldQty * oldCostBase + baseQty * unitCostBaseInBaseCurrency) / (oldQty + baseQty))
+      : unitCostBaseInBaseCurrency;
+
+    const newCost = (oldQty + baseQty) > 0
+      ? round2((oldQty * oldCost + baseQty * unitCostBase) / (oldQty + baseQty))
+      : unitCostBase;
+
     await client.query(
-      `UPDATE product_batches SET quantity = quantity + $1, cost_price = $2
-       WHERE id = $3`,
-      [qty, unitCost, existing.rows[0].id]
+      `UPDATE product_batches SET quantity = quantity + $1, cost_price = $2, cost_price_base = $3 WHERE id = $4`,
+      [baseQty, newCost, newCostBase, existing.rows[0].id]
     );
+
     batchId = existing.rows[0].id;
   } else {
     const nb = await client.query(
       `INSERT INTO product_batches
-         (company_id, product_id, warehouse_id, batch_number, expiry_date, cost_price, quantity)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+         (company_id, product_id, warehouse_id, batch_number, expiry_date, cost_price, cost_price_base, quantity)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id`,
-      [buyerCompanyId, item.product_id, buyerWarehouseId, batchNumber, expiry, unitCost, qty]
+      [buyerCompanyId, item.product_id, buyerWarehouseId, batchNumber, expiry, unitCostBase, unitCostBaseInBaseCurrency, baseQty]
     );
     batchId = nb.rows[0].id;
   }
@@ -157,79 +172,36 @@ async function receiveBuyerStock(client, {
     `INSERT INTO stock_movements
        (company_id, warehouse_id, batch_id, movement_type, quantity, unit_cost,
         reference_type, reference_id, movement_date, created_by)
-     VALUES ($1,$2,$3,'in',$4,$5,'purchase',$6,$7,$8)`,
-    [buyerCompanyId, buyerWarehouseId, batchId, qty, unitCost,
-     order.id, order.order_date, userId]
+     VALUES ($1, $2, $3, 'in', $4, $5, 'purchase', $6, $7, $8)`,
+    [buyerCompanyId, buyerWarehouseId, batchId, baseQty, unitCostBase, order.id, order.order_date, userId]
   );
 
-  return { product_id: item.product_id, batch_id: batchId, quantity: qty };
+  return {
+    product_id: item.product_id,
+    batch_id: batchId,
+    quantity: baseQty,
+    unit_cost: unitCostBase,
+    unit_cost_base: unitCostBaseInBaseCurrency,
+  };
 }
 
-async function consumeSupplierStockFIFO(client, {
-  supplierCompanyId,
-  supplierWarehouseId,
-  productId,
-  quantity,
-  referenceId,
-  movementDate,
-  userId,
-}) {
-  const batches = await client.query(
-    `SELECT pb.id, pb.quantity, pb.cost_price, pb.expiry_date
-     FROM product_batches pb
-     JOIN warehouses w ON w.id = pb.warehouse_id
-     WHERE pb.product_id = $1
-       AND w.company_id = $2
-       AND w.is_active = TRUE
-       AND pb.quantity > 0
-       AND (pb.expiry_date IS NULL OR pb.expiry_date > CURRENT_DATE)
-     ORDER BY pb.expiry_date ASC NULLS LAST, pb.created_at ASC
-     FOR UPDATE OF pb`,
-    [productId, supplierCompanyId]
-  );
+function resolveBatchNumber(item, order) {
+  if (item.batch_number && String(item.batch_number).trim()) return String(item.batch_number).trim();
+  return `PO${order.order_number}-${item.id}`;
+}
 
-  let remaining = Number(quantity);
-  let totalCost = 0;
-  const consumed = [];
-
-  for (const b of batches.rows) {
-    if (remaining <= 0) break;
-    const available = Number(b.quantity);
-    const take = Math.min(available, remaining);
-    const cost = Number(b.cost_price) || 0;
-
-    await client.query(
-      `UPDATE product_batches SET quantity = quantity - $1 WHERE id = $2`,
-      [take, b.id]
-    );
-
-    await client.query(
-      `INSERT INTO stock_movements
-         (company_id, warehouse_id, batch_id, movement_type, quantity, unit_cost,
-          reference_type, reference_id, movement_date, created_by)
-       VALUES ($1,$2,$3,'out',$4,$5,'sales',$6,$7,$8)`,
-      [supplierCompanyId, supplierWarehouseId, b.id, take, cost,
-       referenceId, movementDate, userId]
-    );
-
-    consumed.push({ batch_id: b.id, quantity: take, cost_price: cost });
-    totalCost += round2(cost * take);
-    remaining -= take;
+function resolveExpiryDate(item) {
+  if (item.expiry_date) {
+    const expiryDate = new Date(item.expiry_date);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (expiryDate < today) throw new ApiError(400, `Expiry date is in the past for item ${item.id}`);
+    return item.expiry_date;
   }
-
-  if (remaining > 0) {
-    throw new ApiError(
-      409,
-      `الكمية غير متوفرة لدى المورد للصنف ${productId}: نقص ${remaining}`
-    );
-  }
-
-  return { consumed, totalCost: round2(totalCost) };
+  return '2099-12-31';
 }
 
 module.exports = {
-  checkSupplierStockAvailability,
-  confirmInventory,
-  consumeSupplierStockFIFO,
-  getDefaultWarehouse,
+  checkSupplierStockAvailability, confirmInventory, getDefaultWarehouse,
+  resolveUnitCostBase, resolveBatchNumber, resolveExpiryDate,
 };

@@ -1,29 +1,36 @@
+// services/return/confirm/notify.js
 const Notification = require('../../../models/Notification');
 
 /**
- * يرسل إشعاراً — fire-and-forget (لا يُفشل العملية).
+ * إشعار بعد COMMIT — best effort.
+ * ✅ يستخدم return_type === 'sale' (بدون s)
  */
-async function notify(client, companyId, returnId, ret) {
+async function notifyAfterCommit(companyId, returnId, ret) {
   try {
-    console.log('[confirm:6] notify START');
-    await Notification.create(client, {
-      companyId,
-      type: 'general',
-      title: `مرتجع ${ret.return_type === 'sales' ? 'بيع' : 'شراء'}`,
-      message: `تم تأكيد المرتجع ${ret.return_number} بمبلغ ${ret.total}.`,
-      metadata: {
-        return_id: returnId,
-        return_type: ret.return_type,
-        total: Number(ret.total),
-      },
-      referenceType: 'return',
-      referenceId: returnId,
-      uniqueKey: `return_confirmed:${returnId}`,
-    });
-    console.log('[confirm:6] notify OK');
+    const { pool } = require('../../../config/pool');
+    const client = await pool.connect();
+    try {
+      const label = ret.return_type === 'sale' ? 'بيع' : 'شراء';
+      await Notification.create(client, {
+        companyId,
+        type: 'general',
+        title: `مرتجع ${label}`,
+        message: `تم تأكيد المرتجع ${ret.return_number} بمبلغ ${ret.total}.`,
+        metadata: {
+          return_id: returnId,
+          return_type: ret.return_type,
+          total: Number(ret.total),
+        },
+        referenceType: 'return',
+        referenceId: returnId,
+        uniqueKey: `return_confirmed:${returnId}`,
+      });
+    } finally {
+      client.release();
+    }
   } catch (err) {
-    console.error('[confirm:6] notify FAILED (non-fatal):', err.message);
+    console.error('[return:notify] failed (non-fatal):', err.message);
   }
 }
 
-module.exports = { notify };
+module.exports = { notifyAfterCommit };

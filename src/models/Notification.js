@@ -1,11 +1,12 @@
-const {pool} = require('../config/pool');
+// models/Notification.js
+const { pool } = require('../config/pool');
 
 class Notification {
   static async list(companyId, userId, { is_read, type, page = 1, limit = 20 }) {
     const params = [companyId, userId];
     const conds = [
       'company_id = $1',
-      '(user_id = $2 OR user_id IS NULL)', // إشعارات عامة للشركة أو للمستخدم
+      '(user_id = $2 OR user_id IS NULL)',
     ];
 
     if (is_read !== undefined) { params.push(is_read); conds.push(`is_read = $${params.length}`); }
@@ -81,33 +82,32 @@ class Notification {
   }
 
   /**
-   * إنشاء إشعار (آمن ضد التكرار عبر unique_key)
+   * إنشاء إشعار (آمن ضد التكرار عبر unique_key).
+   * ✅ ON CONFLICT DO NOTHING — لا يُلغي transaction.
    * @returns true إذا أُنشئ، false إذا موجود مسبقاً
    */
   static async create(client, {
     companyId, userId = null, type, title, message,
     metadata = null, referenceType = null, referenceId = null, uniqueKey = null,
   }) {
-    try {
-      await client.query(
-        `INSERT INTO notifications
-           (company_id, user_id, type, title, message, metadata,
-            reference_type, reference_id, unique_key)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [companyId, userId, type, title, message,
-         metadata ? JSON.stringify(metadata) : null,
-         referenceType, referenceId, uniqueKey]
-      );
-      return true;
-    } catch (err) {
-      // 23505 = unique violation (إشعار موجود)
-      if (err.code === '23505') return false;
-      throw err;
-    }
+    const r = await client.query(
+      `INSERT INTO notifications
+         (company_id, user_id, type, title, message, metadata,
+          reference_type, reference_id, unique_key)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (company_id, unique_key) WHERE unique_key IS NOT NULL
+       DO NOTHING
+       RETURNING id`,
+      [companyId, userId, type, title, message,
+       metadata ? JSON.stringify(metadata) : null,
+       referenceType, referenceId, uniqueKey]
+    );
+    return r.rowCount > 0;
   }
 
   /**
-   * إشعارات متعددة دفعة واحدة
+   * إشعارات متعددة دفعة واحدة.
+   * @returns عدد الإشعارات المُنشأة
    */
   static async createMany(client, notifications) {
     let created = 0;

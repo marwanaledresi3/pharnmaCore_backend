@@ -8,7 +8,15 @@ const { generateReturn } = require('./templates/return');
 const { generateTrialBalance } = require('./templates/trialBalance');
 const { generateDeliveryNote } = require('./templates/deliveryNote');
 const { generatePurchaseOrder } = require('./templates/purchaseOrder');
-const {generateSalesOrder }    = require('./templates/generateSalesOrder')
+const {generateSalesOrder }    = require('./templates/generateSalesOrder');
+
+
+const { generateCreditNote } = require('./templates/creditNote');
+const { generateDebitNote } = require('./templates/debitNote');
+const { generateGoodsReceipt } = require('./templates/goodsReceipt');
+const { generateStockTransfer } = require('./templates/stockTransfer');
+const { generateStockAdjustment } = require('./templates/stockAdjustment');
+
 module.exports = {
   generateVoucher,
   generateInvoice,
@@ -20,4 +28,10 @@ module.exports = {
   generateDeliveryNote,
   generatePurchaseOrder,
   generateSalesOrder,
+
+  creditNote: generateCreditNote,
+  debitNote: generateDebitNote,
+  goodsReceipt: generateGoodsReceipt,
+  stockTransfer: generateStockTransfer,
+  stockAdjustment: generateStockAdjustment,
 };

@@ -55,10 +55,16 @@ const unpost = asyncHandler(async (req, res) => {
 /**
  * DELETE /journal-entries/:id
  */
+/**
+ * ✅ DELETE /journal-entries/:id
+ * يستخدم service.remove (مع transactionStarted + قفل)
+ */
 const remove = asyncHandler(async (req, res) => {
-  const ok = await JournalEntry.delete(req.user.company_id, req.params.id);
-  if (!ok) throw new ApiError(404, 'Entry not found or not draft');
-  res.json({ success: true, message: 'Journal entry deleted' });
+  const result = await service.remove(
+    req.user.company_id,
+    req.params.id
+  );
+  res.json({ success: true, data: result });
 });
 
 /**

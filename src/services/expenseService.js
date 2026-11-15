@@ -1,35 +1,71 @@
+// services/expenseService.js
 const { pool } = require('../config/pool');
 const ApiError = require('../errors/ApiError');
 const Expense = require('../models/Expense');
 const JournalEntry = require('../models/JournalEntry');
 const NumberingService = require('./numberingService');
+const settingsService = require('./settingsService');
+const {
+  round2,
+  assertBalanced,
+  requireActiveAccounts,
+  verifyJournalEntry,
+  buildExpenseLines,
+  buildExpensePayLines,
+} = require('./journalHelper');
 
-const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+// ═══════════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════════
 
-/** يضيف أياماً إلى تاريخ YYYY-MM-DD ويعيد YYYY-MM-DD */
 const addDays = (isoDate, days) => {
   const d = new Date(`${isoDate}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
 };
 
-/** تاريخ اليوم حسب قاعدة البيانات (يتجنب مشكلة UTC) */
 const todayDb = async (client) => {
   const r = await client.query('SELECT CURRENT_DATE AS d');
   return r.rows[0].d;
 };
 
-/* ============================================================
- * إنشاء مصروف
- * القيد:
- *   نقداً:  مدين حساب المصروف / دائن صندوق
- *   آجل:    مدين حساب المصروف / دائن ذمم موردين
- *   جزئي:   مدين حساب المصروف / دائن صندوق + ذمم موردين
- * ============================================================ */
+/**
+ * ✅ حساب الصندوق/البنك — مع التحقق من settings + الملكية + النشاط
+ */
+async function findCashAccount(client, companyId, method) {
+  const isBank = method === 'bank' || method === 'cheque';
+  const settingsKey = isBank ? 'payment_bank_account_id' : 'payment_cash_account_id';
+
+  const accountId = await settingsService.get(companyId, settingsKey, null, client);
+  if (accountId) {
+    const check = await client.query(
+      `SELECT id FROM chart_of_accounts
+       WHERE id = $1 AND company_id = $2 AND is_active = TRUE`,
+      [accountId, companyId]
+    );
+    if (check.rowCount) return accountId;
+    console.warn(`[expenseService] settings.${settingsKey}=${accountId} is invalid — fallback`);
+  }
+
+  const code = isBank ? '1112' : '1111';
+  const accounts = await requireActiveAccounts(
+    client, companyId, [code], `في حساب ${isBank ? 'البنك' : 'الصندوق'}`
+  );
+  return accounts[code];
+}
+
+const paymentReferenceForExpense = (expenseId) => `EXP:${expenseId}`;
+
+// ═══════════════════════════════════════════════════════════════
+// 1) إنشاء مصروف — محصّن
+// ═══════════════════════════════════════════════════════════════
+
 const create = async (companyId, userId, payload) => {
   const client = await pool.connect();
+  let transactionStarted = false;
   try {
     await client.query('BEGIN');
+    transactionStarted = true;
 
     // 1) البيان
     if (!payload.description || !String(payload.description).trim()) {
@@ -42,19 +78,26 @@ const create = async (companyId, userId, payload) => {
       throw new ApiError(400, 'المبلغ يجب أن يكون أكبر من صفر');
     }
 
-    // 3) الحساب
-    if (!payload.expense_account_id) {
-      throw new ApiError(400, 'يجب اختيار حساب المصروف');
-    }
+    // 3) العملة
+    if (!payload.currency_id) throw new ApiError(400, 'currency_id مطلوب');
+    const cur = await client.query(`SELECT id FROM currencies WHERE id = $1`, [payload.currency_id]);
+    if (!cur.rowCount) throw new ApiError(400, 'Currency not found');
+
+    // 4) سعر الصرف
+    const rate = Number(payload.exchange_rate);
+    const finalRate = Number.isFinite(rate) && rate > 0 ? rate : 1;
+
+    // 5) الحساب
+    if (!payload.expense_account_id) throw new ApiError(400, 'يجب اختيار حساب المصروف');
     const acc = await client.query(
       `SELECT id, code FROM chart_of_accounts
-       WHERE id = $1 AND company_id = $2 AND account_type = 'expense'`,
+       WHERE id = $1 AND company_id = $2 AND account_type = 'expense' AND is_active = TRUE`,
       [payload.expense_account_id, companyId]
     );
-    if (!acc.rowCount) throw new ApiError(400, 'Expense account not found');
+    if (!acc.rowCount) throw new ApiError(400, 'Expense account not found or inactive');
     const expenseAccountId = acc.rows[0].id;
 
-    // 4) نوع الدفع + تحقق
+    // 6) نوع الدفع
     const paymentType = payload.payment_type || 'cash';
     if (!['cash', 'credit', 'partial'].includes(paymentType)) {
       throw new ApiError(400, 'نوع الدفع غير صحيح');
@@ -79,44 +122,57 @@ const create = async (companyId, userId, payload) => {
       }
     }
 
-    // 5) التاريخ + الاستحقاق
+    // 7) التاريخ
     const expenseDate = payload.expense_date || (await todayDb(client));
-    const dueDate = payload.due_date
-      || (isCredit ? addDays(expenseDate, 30) : null);
+    const dueDate = payload.due_date || (isCredit ? addDays(expenseDate, 30) : null);
 
-    // 6) رقم المصروف
-    const expenseNumber = await NumberingService.next(client, companyId, 'expense', {
-      prefix: 'EXP', pad: 5,
-    });
+    // 8) رقم المصروف — ✅ من settings (بدون تجاوز)
+    const expenseNumber = await NumberingService.next(client, companyId, 'expense');
 
-    // 7) الحسابات المقابلة
-    const cashAccountId = await findCashAccount(
-      client, companyId, payload.payment_method || 'cash'
-    );
-    const payableAccountId = await findAccountId(client, companyId, '211');
+    // 9) الحسابات (إجبارية)
+    const requiredCodes = [];
+    if (paidAmount > 0) requiredCodes.push('1111');  // صندوق مؤقتاً — سيُستبدل
+    if (isCredit) requiredCodes.push('211');         // ذمم موردين
 
-    // 8) سطور القيد (بالعملة الأساسية)
-    const rate = Number(payload.exchange_rate) || 1;
-    const amountBase = round2(amt * rate);
-    const paidBase = round2(paidAmount * rate);
+    // ⚠️ نستخدم requireActiveAccounts لحساب الذمم (إن وُجد)
+    let payableAccountId = null;
+    if (isCredit) {
+      const accs = await requireActiveAccounts(
+        client, companyId, ['211'], 'في المصروف'
+      );
+      payableAccountId = accs['211'];
+    }
+
+    // 10) الحسابات والقيد (بالعملة الأساسية)
+    const amountBase = round2(amt * finalRate);
+    const paidBase = round2(paidAmount * finalRate);
     const creditBase = round2(amountBase - paidBase);
 
-    const lines = [
-      { account_id: expenseAccountId, debit: amountBase, credit: 0, description: payload.description },
-    ];
-    if (paidBase > 0) {
-      lines.push({ account_id: cashAccountId, debit: 0, credit: paidBase, description: 'دفع نقدي' });
-    }
-    if (creditBase > 0) {
-      lines.push({ account_id: payableAccountId, debit: 0, credit: creditBase, description: `ذمة مورد - ${payload.description}` });
-    }
+    // ✅ بناء السطور
+    const lines = buildExpenseLines({
+      accounts: {
+        expenseAccountId,
+        cashAccountId: paidBase > 0
+          ? await findCashAccount(client, companyId, payload.payment_method || 'cash')
+          : null,
+        payableAccountId,
+      },
+      amountBase,
+      paidBase,
+      creditBase,
+      description: payload.description,
+    });
 
-    // 9) أنشئ المصروف أولاً (بدون journal_entry_id)
+    // ✅ التحقق من التوازن
+    assertBalanced(lines, 'في المصروف');
+
+    // 11) الحالة
     const status =
       paymentType === 'cash' ? 'paid'
       : paymentType === 'partial' ? 'partial'
       : 'posted';
 
+    // 12) إنشاء المصروف
     const expense = await Expense.create(client, companyId, {
       expense_number: expenseNumber,
       expense_date: expenseDate,
@@ -126,7 +182,7 @@ const create = async (companyId, userId, payload) => {
       description: payload.description,
       amount: amt,
       currency_id: payload.currency_id,
-      exchange_rate: rate,
+      exchange_rate: finalRate,
       payment_type: paymentType,
       payment_method: payload.payment_method || null,
       paid_amount: paidAmount,
@@ -137,7 +193,7 @@ const create = async (companyId, userId, payload) => {
       created_by: userId,
     });
 
-    // 10) أنشئ القيد مع source_id مضبوطاً من البداية
+    // 13) القيد
     const entry = await JournalEntry.create(client, companyId, {
       entry_date: expenseDate,
       description: `مصروف - ${payload.description}`,
@@ -147,34 +203,55 @@ const create = async (companyId, userId, payload) => {
       lines,
     });
 
-    // 11) اربط المصروف بالقيد
-    await client.query(
-      `UPDATE expenses SET journal_entry_id = $1 WHERE id = $2`,
-      [entry.id, expense.id]
-    );
+    // ✅ verify بعد الإنشاء
+    await verifyJournalEntry(client, entry.id, 'في المصروف');
 
-    // 12) رحّل القيد
+    // 14) ربط (مع company_id)
+    const link = await client.query(
+      `UPDATE expenses SET journal_entry_id = $1
+       WHERE id = $2 AND company_id = $3
+       RETURNING id`,
+      [entry.id, expense.id, companyId]
+    );
+    if (!link.rowCount) {
+      throw new ApiError(500, 'فشل ربط القيد بالمصروف');
+    }
+
+    // 15) ترحيل
     await JournalEntry.post(client, companyId, entry.id, userId);
 
     await client.query('COMMIT');
-    return { ...expense, journal_entry_id: entry.id, due_date: dueDate, paid_amount: paidAmount };
+    transactionStarted = false;
+
+    return {
+      ...expense,
+      journal_entry_id: entry.id,
+      due_date: dueDate,
+      paid_amount: paidAmount,
+    };
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (transactionStarted) {
+      try { await client.query('ROLLBACK'); }
+      catch (e) { console.error('[expense.create] ROLLBACK failed:', e.message); }
+    }
     throw err;
   } finally {
     client.release();
   }
 };
 
-/* ============================================================
- * دفع مصروف (سند صرف)
- * ============================================================ */
+// ═══════════════════════════════════════════════════════════════
+// 2) دفع مصروف — محصّن
+// ═══════════════════════════════════════════════════════════════
+
 const pay = async (companyId, userId, expenseId, payload) => {
   const client = await pool.connect();
+  let transactionStarted = false;
   try {
     await client.query('BEGIN');
+    transactionStarted = true;
 
-    // 1) قفل السطر
+    // 1) قفل
     const expRes = await client.query(
       `SELECT * FROM expenses
        WHERE id = $1 AND company_id = $2 AND status IN ('posted', 'partial')
@@ -185,9 +262,7 @@ const pay = async (companyId, userId, expenseId, payload) => {
     if (!exp) throw new ApiError(404, 'المصروف غير موجود أو غير قابل للدفع');
 
     const remaining = round2(Number(exp.amount) - Number(exp.paid_amount || 0));
-    if (remaining <= 0.01) {
-      throw new ApiError(400, 'المصروف مدفوع بالكامل');
-    }
+    if (remaining <= 0.01) throw new ApiError(400, 'المصروف مدفوع بالكامل');
 
     // 2) المبلغ
     const amt = round2(Number(payload.amount || remaining));
@@ -199,72 +274,93 @@ const pay = async (companyId, userId, expenseId, payload) => {
     const paymentDate = payload.payment_date || (await todayDb(client));
     const method = payload.method || exp.payment_method || 'bank';
 
-    // 4) الحسابات
+    // 4) الحسابات (إجبارية)
+    const accounts = await requireActiveAccounts(
+      client, companyId, ['211'], 'في دفع المصروف'
+    );
+    const payableAccountId = accounts['211'];
     const cashAccountId = await findCashAccount(client, companyId, method);
-    const payableAccountId = await findAccountId(client, companyId, '211');
 
     const rate = Number(exp.exchange_rate) || 1;
     const amountBase = round2(amt * rate);
 
-    // 5) سجل الدفع أولاً (حتى يشير إليه القيد)
+    // 5) رقم السند — ✅ من settings
     const voucherNumber = await NumberingService.next(
-      client, companyId, 'pay_voucher', { prefix: 'PAY', pad: 5 }
+      client, companyId, 'payment_voucher'
     );
 
-    const paymentInsert = await client.query(
-      `INSERT INTO payments
-         (company_id, payment_type, amount, currency_id, payment_date, method,
-          reference, created_by, voucher_number, supplier_id, description)
-       VALUES ($1, 'pay', $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       RETURNING id`,
-      [
-        companyId,
-        amt,
-        exp.currency_id,
-        paymentDate,
-        method,
-        `EXP:${expenseId}`,
-        userId,
-        voucherNumber,
-        exp.supplier_id,
-        `دفع مصروف ${exp.expense_number}`,
-      ]
-    );
-    const paymentId = paymentInsert.rows[0].id;
+    // 6) بناء السطور + التحقق
+    const lines = buildExpensePayLines({
+      accounts: { payableAccountId, cashAccountId },
+      amountBase,
+      reference: exp.expense_number,
+    });
 
-    // 6) القيد مرتبط بالدفع
+    assertBalanced(lines, 'في دفع المصروف');
+
+    // 7) ✅ إنشاء القيد أولاً (قبل Payment)
     const entry = await JournalEntry.create(client, companyId, {
       entry_date: paymentDate,
       description: `دفع مصروف ${exp.expense_number}`,
       source_type: 'payment',
-      source_id: paymentId,
+      source_id: null, // سيُحدَّث
       created_by: userId,
-      lines: [
-        { account_id: payableAccountId, debit: amountBase, credit: 0, description: 'دفع ذمة مورد' },
-        { account_id: cashAccountId,    debit: 0, credit: amountBase, description: 'صرف نقدي' },
-      ],
+      lines,
     });
 
-    // 7) ربط الدفع بالقيد
-    await client.query(
-      `UPDATE payments SET journal_entry_id = $1 WHERE id = $2`,
-      [entry.id, paymentId]
-    );
+    // ✅ verify بعد الإنشاء
+    await verifyJournalEntry(client, entry.id, 'في دفع المصروف');
 
-    // 8) تحديث المصروف
+    // 8) إنشاء Payment (بعد القيد)
+    const paymentInsert = await client.query(
+      `INSERT INTO payments
+         (company_id, payment_type, amount, currency_id, payment_date, method,
+          reference, created_by, voucher_number, supplier_id, description,
+          journal_entry_id)
+       VALUES ($1, 'pay', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING id`,
+      [
+        companyId, amt, exp.currency_id, paymentDate, method,
+        paymentReferenceForExpense(expenseId),
+        userId, voucherNumber, exp.supplier_id,
+        `دفع مصروف ${exp.expense_number}`,
+        entry.id,
+      ]
+    );
+    const paymentId = paymentInsert.rows[0].id;
+
+    // 9) ربط القيد بالدفعة (مع company_id)
+    const link = await client.query(
+      `UPDATE journal_entries SET source_id = $1
+       WHERE id = $2 AND company_id = $3
+       RETURNING id`,
+      [paymentId, entry.id, companyId]
+    );
+    if (!link.rowCount) {
+      throw new ApiError(500, 'فشل ربط القيد بالدفعة');
+    }
+
+    // 10) تحديث المصروف (مع company_id + status + RETURNING)
     const newPaid = round2(Number(exp.paid_amount || 0) + amt);
     const newStatus = newPaid >= Number(exp.amount) - 0.01 ? 'paid' : 'partial';
 
-    await client.query(
-      `UPDATE expenses SET paid_amount = $1, status = $2, updated_at = NOW()
-       WHERE id = $3`,
-      [newPaid, newStatus, expenseId]
+    const upd = await client.query(
+      `UPDATE expenses
+       SET paid_amount = $1, status = $2, updated_at = NOW()
+       WHERE id = $3 AND company_id = $4 AND status IN ('posted', 'partial')
+       RETURNING id`,
+      [newPaid, newStatus, expenseId, companyId]
     );
+    if (!upd.rowCount) {
+      throw new ApiError(409, 'فشل تحديث المصروف — قد يكون معدّلاً من عملية أخرى');
+    }
 
-    // 9) ترحيل القيد
+    // 11) ترحيل
     await JournalEntry.post(client, companyId, entry.id, userId);
 
     await client.query('COMMIT');
+    transactionStarted = false;
+
     return {
       id: expenseId,
       status: newStatus,
@@ -273,20 +369,26 @@ const pay = async (companyId, userId, expenseId, payload) => {
       journal_entry_id: entry.id,
     };
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (transactionStarted) {
+      try { await client.query('ROLLBACK'); }
+      catch (e) { console.error('[expense.pay] ROLLBACK failed:', e.message); }
+    }
     throw err;
   } finally {
     client.release();
   }
 };
 
-/* ============================================================
- * إلغاء مصروف — قيد عكسي
- * ============================================================ */
+// ═══════════════════════════════════════════════════════════════
+// 3) إلغاء مصروف — محصّن
+// ═══════════════════════════════════════════════════════════════
+
 const cancel = async (companyId, userId, expenseId) => {
   const client = await pool.connect();
+  let transactionStarted = false;
   try {
     await client.query('BEGIN');
+    transactionStarted = true;
 
     const expRes = await client.query(
       `SELECT * FROM expenses
@@ -297,96 +399,149 @@ const cancel = async (companyId, userId, expenseId) => {
     const exp = expRes.rows[0];
     if (!exp) throw new ApiError(404, 'المصروف غير موجود');
 
-    // لا يمكن إلغاء مصروف مدفوع بالكامل — يجب استرداد بدلاً من ذلك
     if (exp.status === 'paid') {
       throw new ApiError(400, 'لا يمكن إلغاء مصروف مدفوع بالكامل — استخدم الاسترداد');
     }
 
-    // عكس القيد الأصلي
+    // 3a) عكس القيد الأصلي
     if (exp.journal_entry_id) {
       const original = await JournalEntry.findById(companyId, exp.journal_entry_id);
-      if (original && original.lines) {
-        const reversedLines = original.lines.map((l) => ({
-          account_id: l.account_id,
-          debit: Number(l.credit),
-          credit: Number(l.debit),
-          description: `إلغاء: ${l.description || ''}`,
-        }));
-        const reverse = await JournalEntry.create(client, companyId, {
-          entry_date: await todayDb(client),
-          description: `إلغاء مصروف ${exp.expense_number}`,
-          source_type: 'adjustment',
-          source_id: expenseId,
-          created_by: userId,
-          lines: reversedLines,
-        });
-        await JournalEntry.post(client, companyId, reverse.id, userId);
+      if (!original) {
+        throw new ApiError(409, `Cannot cancel: original journal entry not found`);
       }
+      if (!Array.isArray(original.lines) || original.lines.length === 0) {
+        throw new ApiError(409, 'Cannot cancel: original journal entry has no lines');
+      }
+
+      const reversedLines = original.lines.map((l) => ({
+        account_id: l.account_id,
+        debit: Number(l.credit),
+        credit: Number(l.debit),
+        description: `إلغاء: ${l.description || ''}`,
+      }));
+
+      assertBalanced(reversedLines, 'في عكس قيد المصروف');
+
+      const reverse = await JournalEntry.create(client, companyId, {
+        entry_date: await todayDb(client),
+        description: `إلغاء مصروف ${exp.expense_number}`,
+        source_type: 'adjustment',
+        source_id: expenseId,
+        created_by: userId,
+        lines: reversedLines,
+      });
+
+      await verifyJournalEntry(client, reverse.id, 'في عكس قيد المصروف');
+      await JournalEntry.post(client, companyId, reverse.id, userId);
     }
 
-    await Expense.updateStatus(companyId, expenseId, 'cancelled', client);
+    // 3b) عكس قيود الدفعات المرتبطة
+    const paymentsRes = await client.query(
+      `SELECT journal_entry_id FROM payments
+       WHERE company_id = $1 AND reference = $2
+         AND journal_entry_id IS NOT NULL`,
+      [companyId, paymentReferenceForExpense(expenseId)]
+    );
+
+    for (const p of paymentsRes.rows) {
+      const original = await JournalEntry.findById(companyId, p.journal_entry_id);
+      if (!original?.lines) continue;
+
+      const reversedLines = original.lines.map((l) => ({
+        account_id: l.account_id,
+        debit: Number(l.credit),
+        credit: Number(l.debit),
+        description: `إلغاء دفعة: ${l.description || ''}`,
+      }));
+
+      assertBalanced(reversedLines, 'في عكس دفعة المصروف');
+
+      const reverse = await JournalEntry.create(client, companyId, {
+        entry_date: await todayDb(client),
+        description: `إلغاء دفعة مصروف ${exp.expense_number}`,
+        source_type: 'adjustment',
+        source_id: expenseId,
+        created_by: userId,
+        lines: reversedLines,
+      });
+
+      await verifyJournalEntry(client, reverse.id, 'في عكس دفعة المصروف');
+      await JournalEntry.post(client, companyId, reverse.id, userId);
+    }
+
+    // 3c) تحديث الحالة (مع company_id + status + RETURNING)
+    const upd = await client.query(
+      `UPDATE expenses
+       SET status = 'cancelled'
+       WHERE id = $1 AND company_id = $2 AND status <> 'cancelled'
+       RETURNING id`,
+      [expenseId, companyId]
+    );
+    if (!upd.rowCount) {
+      throw new ApiError(409, 'فشل الإلغاء — قد يكون معدّلاً من عملية أخرى');
+    }
+
     await client.query('COMMIT');
+    transactionStarted = false;
     return { id: expenseId, status: 'cancelled' };
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (transactionStarted) {
+      try { await client.query('ROLLBACK'); }
+      catch (e) { console.error('[expense.cancel] ROLLBACK failed:', e.message); }
+    }
     throw err;
   } finally {
     client.release();
   }
 };
 
-/* ============================================================
- * Helpers
- * ============================================================ */
-async function findAccountId(client, companyId, code) {
-  const r = await client.query(
-    `SELECT id FROM chart_of_accounts
-     WHERE company_id = $1 AND code = $2 AND is_active = TRUE`,
-    [companyId, code]
-  );
-  if (!r.rowCount) throw new ApiError(500, `الحساب ${code} غير موجود`);
-  return r.rows[0].id;
-}
-
-async function findCashAccount(client, companyId, method) {
-  const code = method === 'bank' || method === 'cheque' ? '1112' : '1111';
-  const r = await client.query(
-    `SELECT id FROM chart_of_accounts
-     WHERE company_id = $1 AND code = $2 AND is_active = TRUE`,
-    [companyId, code]
-  );
-  if (r.rowCount) return r.rows[0].id;
-  throw new ApiError(500, `حساب النقدية ${code} غير موجود — أعد تهيئة الشركة`);
-}
-
+// ═══════════════════════════════════════════════════════════════
+// 4) حذف مصروف (للملغى فقط) — محصّن
+// ═══════════════════════════════════════════════════════════════
 
 const remove = async (companyId, userId, expenseId) => {
   const client = await pool.connect();
+  let transactionStarted = false;
   try {
     await client.query('BEGIN');
+    transactionStarted = true;
+
     const expRes = await client.query(
-      `SELECT id, status FROM expenses WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      `SELECT id, expense_number, status FROM expenses
+       WHERE id = $1 AND company_id = $2
+       FOR UPDATE`,
       [expenseId, companyId]
     );
     const exp = expRes.rows[0];
     if (!exp) throw new ApiError(404, 'Expense not found');
-    if (exp.status !== 'draft') {
-      throw new ApiError(400, 'لا يمكن حذف مصروف مرحّل — استخدم الإلغاء بدلاً من ذلك');
+
+    if (exp.status !== 'cancelled') {
+      throw new ApiError(400, 'لا يمكن حذف مصروف غير ملغى — استخدم الإلغاء أولاً');
     }
-    await client.query(`DELETE FROM expenses WHERE id = $1`, [expenseId]);
+
+    // ✅ DELETE مع company_id + RETURNING
+    const del = await client.query(
+      `DELETE FROM expenses
+       WHERE id = $1 AND company_id = $2 AND status = 'cancelled'
+       RETURNING id`,
+      [expenseId, companyId]
+    );
+    if (!del.rowCount) {
+      throw new ApiError(409, 'فشل الحذف — قد يكون معدّلاً من عملية أخرى');
+    }
+
     await client.query('COMMIT');
+    transactionStarted = false;
+    return { id: expenseId, deleted: true };
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (transactionStarted) {
+      try { await client.query('ROLLBACK'); }
+      catch (e) { console.error('[expense.remove] ROLLBACK failed:', e.message); }
+    }
     throw err;
   } finally {
     client.release();
   }
 };
-module.exports = {
-  create,
-  pay,
-  cancel,
-  list: (companyId, query) => Expense.list(companyId, query),
-  getOne: (companyId, id) => Expense.findById(companyId, id),
-  remove,
-};
+
+module.exports = { create, pay, cancel, remove };

@@ -153,7 +153,7 @@ class User {
   }
 
   static async list(companyId, {
-    search, is_active, user_type, branch_id,
+    search, is_active, user_type, branch_id, unassigned,
     sort = 'created_at', order = 'desc', page = 1, limit = 20,
   }) {
     const params = [companyId];
@@ -178,7 +178,9 @@ class User {
       params.push(branch_id);
       conds.push(`u.branch_id = $${params.length}`);
     }
-
+    if (unassigned === true || unassigned === 'true') {
+      conds.push('u.branch_id IS NULL');
+    }
     const SORTABLE = {
       name: 'u.name', email: 'u.email',
       is_active: 'u.is_active', created_at: 'u.created_at',

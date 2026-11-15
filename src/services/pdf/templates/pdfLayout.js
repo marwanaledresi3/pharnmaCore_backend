@@ -287,7 +287,7 @@ function drawTableRow(doc, columns, values, x, y, rowHeight = 35) {
 
     const value = values[column.key] ?? '';
 
-    if (column.type === FONT_REGULAR) {
+    if (column.type === 'arabic') {
       arabic(
         doc,
         value,

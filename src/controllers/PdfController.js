@@ -1,9 +1,22 @@
+// controllers/PdfController.js
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../errors/ApiError');
 const { resolveLogoAsync } = require('../services/pdf/helpers/logoResolver');
 const { formatDate } = require('../utils/dateUtils');
 const { numToArabicWords } = require('../utils/numberToArabicWords');
 const { pool } = require('../config/pool');
+
+// ═══ Models ═══
+const InvoiceModel = require('../models/Invoice');
+const SalesOrderModel = require('../models/SalesOrder');
+const NoteModel = require('../models/Note');  // 🆕
+
+// ═══ Services ═══
+const GoodsReceiptService = require('../services/goodsReceiptService');  // 🆕
+const StockTransferService = require('../services/stockTransferService');  // 🆕
+const StockAdjustmentService = require('../services/stockAdjustmentService');  // 🆕
+
+// ═══ PDF ═══
 const {
   generateInvoice,
   generateVoucher,
@@ -14,10 +27,18 @@ const {
   generateDeliveryNote,
   generatePurchaseOrder,
   generateSalesOrder,
+  // 🆕
+  creditNote: generateCreditNote,
+  debitNote: generateDebitNote,
+  goodsReceipt: generateGoodsReceipt,
+  stockTransfer: generateStockTransfer,
+  stockAdjustment: generateStockAdjustment,
 } = require('../services/pdf');
-/**
- * يُعيد PDF كـ stream مع headers صحيحة.
- */
+
+// ═══════════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════════
+
 function sendPdf(res, buffer, filename) {
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="${filename}.pdf"`);
@@ -25,36 +46,36 @@ function sendPdf(res, buffer, filename) {
   res.send(buffer);
 }
 
-const companyPdfData = async (company) => {
-  // حمّل الشعار (URL → Buffer) مرة واحدة
+async function companyPdfData(company) {
   const logoBuffer = await resolveLogoAsync(company.logo_url);
-
   return {
     name: company.name,
     name_en: company.name_en,
+    nameAr: company.name,
+    nameEn: company.name_en,
+    tax_number: company.tax_number,
     address: company.address,
+    addressAr: company.address,
+    addressEn: company.address_en || '',
     phone: company.phone,
+    phoneAr: company.phone,
+    phoneEn: company.phone_en || '',
+    email: company.email,
     logo_url: company.logo_url,
-    _logoBuffer: logoBuffer,       // ← يُستخدمه drawCompanyLogo
+    _logoBuffer: logoBuffer,
   };
-};
+}
 
-
-/**
- * يجلب بيانات الشركة.
- */
 async function getCompany(client, companyId) {
   const r = await client.query(
-    `SELECT name,  name_en, tax_number, address, phone, email, logo_url
+    `SELECT name, name_en, tax_number, address, phone, email, logo_url,
+            currency_id
      FROM companies WHERE id = $1`,
     [companyId]
   );
   return r.rows[0] || {};
 }
 
-/**
- * يجلب بيانات طرف (عميل أو مورد).
- */
 async function getParty(client, companyId, partyType, partyId) {
   const table = partyType === 'customer' ? 'customers' : 'suppliers';
   const r = await client.query(
@@ -64,25 +85,17 @@ async function getParty(client, companyId, partyType, partyId) {
   );
   return r.rows[0] || {};
 }
-
-// ═══════════════════════════════════════════
-// فاتورة
-// ═══════════════════════════════════════════
+/* ============================================================
+ * 1) فاتورة
+ * ============================================================ */
 const invoice = asyncHandler(async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
     const companyId = req.user.company_id;
 
-    // 1) الفاتورة
-    const invRes = await client.query(
-      `SELECT i.*, cu.code AS currency_code
-       FROM invoices i
-       JOIN currencies cu ON cu.id = i.currency_id
-       WHERE i.id = $1 AND i.company_id = $2`,
-      [id, companyId]
-    );
-    const inv = invRes.rows[0];
+    // 1) الفاتورة كاملة عبر الموديل (يجلب البنود من sales_order_items / purchase_order_items)
+    const inv = await InvoiceModel.findById(companyId, id);
     if (!inv) throw new ApiError(404, 'Invoice not found');
 
     // 2) الشركة
@@ -91,51 +104,39 @@ const invoice = asyncHandler(async (req, res) => {
 
     // 3) الطرف
     const isSale = inv.invoice_type === 'sales';
-    const party = isSale
-      ? await getParty(client, companyId, 'customer', inv.customer_id)
-      : await getParty(client, companyId, 'supplier', inv.supplier_id);
+    const party = {
+      name: inv.party_name,
+      phone: inv.party_phone,
+      email: inv.party_email,
+      address: inv.party_address,
+      tax_number: inv.party_tax_number,
+    };
 
-    // ═══════════════════════════════════════════
-    // 4) البنود (بدون paid_quantity — مشتق)
-    // ═══════════════════════════════════════════
-    const itemsRes = await client.query(
-      `SELECT ii.quantity, ii.bonus_quantity,
-              ii.unit_price, ii.net_unit_price, ii.tax_rate, ii.tax_amount,
-              ii.line_total, ii.batch_number, ii.expiry_date,
-              p.name, p.sku
-       FROM invoice_items ii
-       JOIN products p ON p.id = ii.product_id
-       WHERE ii.invoice_id = $1
-       ORDER BY ii.id`,
-      [id]
-    );
-
-    const items = itemsRes.rows.map((it) => {
+    // 4) البنود — من items التي أرجعها findById
+    const items = (inv.items || []).map((it) => {
+      const qty = Number(it.quantity || 0);
       const bonus = Number(it.bonus_quantity || 0);
-      const qty = Number(it.quantity || 0);        // إجمالي = مدفوع + بونص
-      const paid = Math.max(0, qty - bonus);       // مدفوع
+      const paid = Math.max(0, qty - bonus);
 
       return {
-        name: it.name,
-        sku: it.sku,
+        name: it.product_name || '—',
+        sku: it.sku || '—',
         quantity: qty,
         paid_quantity: paid,
         bonus_quantity: bonus,
-        unit_price: it.unit_price,
+        unit_price: Number(it.unit_price || 0),
         tax: it.tax_rate > 0 ? `${it.tax_rate}%` : '—',
-        total: it.line_total,
+        total: Number(it.line_total || 0),
         batch_number: it.batch_number || null,
-        expiry_date: formatDate(it.expiry_date)
-          ? formatDate(it.expiry_date)
-          : null,
+        expiry_date: formatDate(it.expiry_date) || null,
       };
     });
 
-    // 5) المجاميع
+    // 5) المجاميع (محسوبة في findById)
     const summary = [
       { label: 'المجموع الفرعي', value: Number(inv.subtotal || 0) },
-      { label: 'الضريبة', value: Number(inv.tax_total || 0) },
-      { label: 'الإجمالي', value: Number(inv.total), isTotal: true },
+      { label: 'الضريبة', value: Number(inv.tax_amount || 0) },
+      { label: 'الإجمالي', value: Number(inv.total || 0), isTotal: true },
     ];
 
     // 6) المبلغ بالحروف
@@ -160,11 +161,9 @@ const invoice = asyncHandler(async (req, res) => {
           inv.status === 'paid'
             ? 'مدفوعة'
             : inv.status === 'partial'
-              ? 'مدفوعة جزئياً'
-              : 'غير مدفوعة',
-        'تاريخ الاستحقاق': inv.due_date
-          ? String(inv.due_date).slice(0, 10)
-          : '—',
+            ? 'مدفوعة جزئياً'
+            : 'غير مدفوعة',
+        'تاريخ الاستحقاق': inv.due_date ? String(inv.due_date).slice(0, 10) : '—',
       },
       notes: inv.notes || null,
     });
@@ -178,9 +177,9 @@ const invoice = asyncHandler(async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════
-// مرتجع
-// ═══════════════════════════════════════════
+/* ============================================================
+ * 2) مرتجع
+ * ============================================================ */
 const returnDoc = asyncHandler(async (req, res) => {
   const client = await pool.connect();
   try {
@@ -208,7 +207,8 @@ const returnDoc = asyncHandler(async (req, res) => {
 
     const itemsRes = await client.query(
       `SELECT ri.quantity, ri.unit_price, ri.tax_rate, ri.tax_amount, ri.line_total,
-              p.name, p.sku
+              ri.bonus_quantity, ri.conversion_factor,
+              p.name AS product_name, p.sku
        FROM return_items ri
        JOIN products p ON p.id = ri.product_id
        WHERE ri.return_id = $1`,
@@ -216,12 +216,14 @@ const returnDoc = asyncHandler(async (req, res) => {
     );
 
     const items = itemsRes.rows.map((it) => ({
-      name: it.name,
+      name: it.product_name,
       sku: it.sku,
-      quantity: it.quantity,
-      unit_price: it.unit_price,
+      quantity: Number(it.quantity || 0),
+      paid_quantity: Number(it.quantity || 0),
+      bonus_quantity: Number(it.bonus_quantity || 0),
+      unit_price: Number(it.unit_price || 0),
       tax: it.tax_rate > 0 ? `${it.tax_rate}%` : '—',
-      total: it.line_total,
+      total: Number(it.line_total || 0),
     }));
 
     const summary = [
@@ -230,23 +232,29 @@ const returnDoc = asyncHandler(async (req, res) => {
       { label: 'الإجمالي المسترجع', value: Number(ret.total), isTotal: true },
     ];
 
-    const amountInWords = `${numToArabicWords(ret.total)} ${ret.currency_code === 'YER' ? 'ريال يمني' : ret.currency_code} فقط لا غير`;
+    const amountInWords = `${numToArabicWords(ret.total)} ${
+      ret.currency_code === 'YER' ? 'ريال يمني' : ret.currency_code
+    } فقط لا غير`;
 
     const buffer = await generateReturn({
       company: companyData,
-      docType: isSale ? 'sale_return' : 'purchase_return',
-      docNumber: ret.return_number,
-      docDate: formatDate(ret.return_date),
+      returnType: isSale ? 'sale_return' : 'purchase_return',
+      returnNumber: ret.return_number,
+      returnDate: formatDate(ret.return_date),
+      originalInvoiceNumber: ret.original_invoice || null,
+      originalInvoiceDate: null,
       partyTitle: isSale ? 'العميل' : 'المورد',
       party,
       items,
-      summary,
+      summary: {
+        subtotal: Number(ret.subtotal),
+        tax: Number(ret.tax_total),
+        total: Number(ret.total),
+      },
       amountInWords,
       currencyCode: ret.currency_code,
-      extraInfo: {
-        'الفاتورة الأصلية': ret.original_invoice || '—',
-        'سبب الإرجاع': ret.reason || '—',
-      },
+      reason: ret.reason || null,
+      extraInfo: [],
     });
 
     sendPdf(res, buffer, `return-${ret.return_number}`);
@@ -255,9 +263,9 @@ const returnDoc = asyncHandler(async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════
-// سند قبض/صرف
-// ═══════════════════════════════════════════
+/* ============================================================
+ * 3) سند قبض/صرف
+ * ============================================================ */
 const payment = asyncHandler(async (req, res) => {
   const client = await pool.connect();
   try {
@@ -285,21 +293,24 @@ const payment = asyncHandler(async (req, res) => {
     const companyData = await companyPdfData(company);
     const isReceive = pay.payment_type === 'receive';
 
-    const amountInWords = `${numToArabicWords(pay.amount)} ${pay.currency_code === 'YER' ? 'ريال يمني' : pay.currency_code} فقط لا غير`;
+    const amountInWords = `${numToArabicWords(pay.amount)} ${
+      pay.currency_code === 'YER' ? 'ريال يمني' : pay.currency_code
+    } فقط لا غير`;
 
-    // ✅ استخدم generateVoucher بدل generate
     const buffer = await generateVoucher({
       company: companyData,
       voucherType: isReceive ? 'receipt' : 'payment',
       voucherNumber: pay.voucher_number || `PAY-${id.slice(0, 8)}`,
       voucherDate: formatDate(pay.payment_date),
-      amount: pay.amount,
+      amount: Number(pay.amount),
       amountInWords,
       partyName: pay.party_name || '—',
-      settlementOf: pay.description || (pay.invoice_number ? `سداد فاتورة #${pay.invoice_number}` : '—'),
+      settlementOf:
+        pay.description ||
+        (pay.invoice_number ? `سداد فاتورة #${pay.invoice_number}` : '—'),
       method: pay.method || 'cash',
       chequeNumber: pay.cheque_number || null,
-      chequeDate: formatDate(pay.cheque_date) ? formatDate(pay.cheque_date) : null,
+      chequeDate: formatDate(pay.cheque_date) || null,
       bankName: pay.bank_name || null,
       currencyCode: pay.currency_code || 'YER',
       externalReference: pay.external_reference || null,
@@ -307,17 +318,16 @@ const payment = asyncHandler(async (req, res) => {
 
     sendPdf(res, buffer, `voucher-${pay.voucher_number || id.slice(0, 8)}`);
   } catch (err) {
-    console.error('[pdf:sales-order] ERROR:', err);
-    console.error('[pdf:sales-order] STACK:', err.stack);
+    console.error('[pdf:payment] ERROR:', err);
     throw err;
   } finally {
     client.release();
   }
 });
 
-// ═══════════════════════════════════════════
-// أمر شراء
-// ═══════════════════════════════════════════
+/* ============================================================
+ * 4) أمر شراء
+ * ============================================================ */
 const purchaseOrder = asyncHandler(async (req, res) => {
   const client = await pool.connect();
   try {
@@ -342,31 +352,35 @@ const purchaseOrder = asyncHandler(async (req, res) => {
 
     const itemsRes = await client.query(
       `SELECT poi.quantity, poi.unit_price, poi.tax_rate, poi.line_total,
-              p.name, p.sku
+              poi.bonus_quantity, poi.batch_number, poi.expiry_date,
+              p.name AS product_name, p.sku
        FROM purchase_order_items poi
        JOIN products p ON p.id = poi.product_id
-       WHERE poi.order_id = $1`,
+       WHERE poi.order_id = $1
+       ORDER BY poi.id`,
       [id]
     );
 
     const items = itemsRes.rows.map((it) => ({
-      name: it.name,
+      name: it.product_name,
       sku: it.sku,
-      quantity: it.quantity,
-      unit_price: it.unit_price,
+      quantity: Number(it.quantity || 0),
+      bonus_quantity: Number(it.bonus_quantity || 0),
+      unit_price: Number(it.unit_price || 0),
       tax: it.tax_rate > 0 ? `${it.tax_rate}%` : '—',
-      total: it.line_total,
+      total: Number(it.line_total || 0),
+      expiry_date: formatDate(it.expiry_date) || null,
     }));
 
-    const amountInWords = `${numToArabicWords(po.total)} ${po.currency_code === 'YER' ? 'ريال يمني' : po.currency_code} فقط لا غير`;
+    const amountInWords = `${numToArabicWords(po.total)} ${
+      po.currency_code === 'YER' ? 'ريال يمني' : po.currency_code
+    } فقط لا غير`;
 
     const buffer = await generatePurchaseOrder({
       company: companyData,
-      docType: 'report',  // سنستخدم نوعاً عاماً
-      docNumber: po.order_number,
-      docDate: formatDate(po.order_date),
-      partyTitle: 'المورد',
-      party: {
+      orderNumber: po.order_number,
+      orderDate: formatDate(po.order_date),
+      supplier: {
         name: po.supplier_name,
         phone: po.supplier_phone,
         email: po.supplier_email,
@@ -374,17 +388,17 @@ const purchaseOrder = asyncHandler(async (req, res) => {
         tax_number: po.supplier_tax_number,
       },
       items,
-      summary: [
-        { label: 'المجموع الفرعي', value: Number(po.subtotal) },
-        { label: 'الضريبة', value: Number(po.tax_total) },
-        { label: 'الإجمالي', value: Number(po.total), isTotal: true },
-      ],
+      summary: {
+        subtotal: Number(po.subtotal),
+        tax: Number(po.tax_total),
+        total: Number(po.total),
+      },
       amountInWords,
       currencyCode: po.currency_code,
-      extraInfo: {
-        'الحالة': po.status,
-        'نوع الدفع': po.payment_type || '—',
-      },
+      extraInfo: [
+        { label: 'الحالة', value: po.status },
+        { label: 'نوع الدفع', value: po.payment_type || '—' },
+      ],
     });
 
     sendPdf(res, buffer, `po-${po.order_number}`);
@@ -393,9 +407,9 @@ const purchaseOrder = asyncHandler(async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════
-// بوليصة تسليم
-// ═══════════════════════════════════════════
+/* ============================================================
+ * 5) بوليصة تسليم
+ * ============================================================ */
 const deliveryNote = asyncHandler(async (req, res) => {
   const client = await pool.connect();
   try {
@@ -418,23 +432,26 @@ const deliveryNote = asyncHandler(async (req, res) => {
     const companyData = await companyPdfData(company);
 
     const itemsRes = await client.query(
-      `SELECT poi.quantity, p.name, p.sku
+      `SELECT poi.quantity, poi.bonus_quantity, poi.batch_number, poi.expiry_date,
+              p.name AS product_name, p.sku
        FROM purchase_order_items poi
        JOIN products p ON p.id = poi.product_id
-       WHERE poi.order_id = $1`,
+       WHERE poi.order_id = $1
+       ORDER BY poi.id`,
       [id]
     );
 
     const items = itemsRes.rows.map((it) => ({
-      name: it.name,
+      name: it.product_name,
       sku: it.sku,
-      quantity: it.quantity,
-      unit_price: 0,
-      tax: '—',
-      total: 0,
+      quantity: Number(it.quantity || 0),
+      paid_quantity: Number(it.quantity || 0),
+      bonus_quantity: Number(it.bonus_quantity || 0),
+      batch_number: it.batch_number || '—',
+      expiry_date: formatDate(it.expiry_date) || '—',
     }));
 
-    // جلب QR إن وجد
+    // QR (نص)
     const qrRes = await client.query(
       `SELECT 1 FROM delivery_tokens WHERE order_id = $1 AND used_at IS NULL LIMIT 1`,
       [id]
@@ -445,24 +462,23 @@ const deliveryNote = asyncHandler(async (req, res) => {
 
     const buffer = await generateDeliveryNote({
       company: companyData,
-      docType: 'delivery_note',
-      docNumber: po.order_number,
-      docDate: formatDate(new Date()),
+      deliveryNumber: po.order_number,
+      deliveryDate: formatDate(new Date()),
+      orderNumber: po.order_number,
       partyTitle: 'المورد',
       party: {
         name: po.supplier_name,
         phone: po.supplier_phone,
         address: po.supplier_address,
       },
+      warehouseName: null,
+      driverName: null,
+      vehicleNumber: null,
       items,
-      summary: [
-        { label: 'عدد البنود', value: items.length, isTotal: false },
+      notes: null,
+      extraInfo: [
+        { label: 'تاريخ أمر الشراء', value: formatDate(po.order_date) },
       ],
-      currencyCode: po.currency_code,
-      extraInfo: {
-        'تاريخ أمر الشراء': formatDate(po.order_date),
-      },
-      qrData,
     });
 
     sendPdf(res, buffer, `delivery-${po.order_number}`);
@@ -471,71 +487,49 @@ const deliveryNote = asyncHandler(async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════
-// كشف حساب
-// ═══════════════════════════════════════════
-/**
- * كشف حساب عميل / مورد — PDF
- * GET /api/v1/pdf/statements/:partyType/:id
- * partyType: 'customer' | 'supplier'
- */
+/* ============================================================
+ * 6) كشف حساب
+ * ============================================================ */
 const statement = asyncHandler(async (req, res) => {
   const client = await pool.connect();
   try {
-    // 1) التعريف أولاً (قبل أي استخدام)
     const { partyType, id } = req.params;
     const companyId = req.user.company_id;
     const { date_from, date_to } = req.query;
 
-
-    // 2) الطرف (عميل أو مورد)
     const party = await getParty(client, companyId, partyType, id);
     if (!party.name) throw new ApiError(404, 'Party not found');
 
-    // 3) الشركة
     const company = await getCompany(client, companyId);
     const companyData = await companyPdfData(company);
 
-    // ═══════════════════════════════════════════
-    // 4) الفواتير (مدفوعة + غير مدفوعة)
-    // ═══════════════════════════════════════════
+    // الفواتير
     const invParams = [id, companyId];
     const invConds = [
       partyType === 'customer' ? 'i.customer_id = $1' : 'i.supplier_id = $1',
       'i.company_id = $2',
       `i.status <> 'cancelled'`,
     ];
-
-    if (date_from) {
-      invParams.push(date_from);
-      invConds.push(`i.invoice_date >= $${invParams.length}`);
-    }
-    if (date_to) {
-      invParams.push(date_to);
-      invConds.push(`i.invoice_date <= $${invParams.length}`);
-    }
+    if (date_from) { invParams.push(date_from); invConds.push(`i.invoice_date >= $${invParams.length}`); }
+    if (date_to)   { invParams.push(date_to);   invConds.push(`i.invoice_date <= $${invParams.length}`); }
 
     const invRes = await client.query(
-      `SELECT i.id, i.invoice_number,i.status, i.invoice_date, i.total, i.paid_amount,
-              i.invoice_type, i.due_date, i.status
+      `SELECT i.id, i.invoice_number, i.status, i.invoice_date, i.total, i.paid_amount,
+              i.invoice_type, i.due_date
        FROM invoices i
        WHERE ${invConds.join(' AND ')}
        ORDER BY i.invoice_date, i.created_at`,
       invParams
     );
 
-    // ═══════════════════════════════════════════
-    // 5) سندات القبض / الصرف
-    // ═══════════════════════════════════════════
+    // الدفعات
     const payParams = [companyId];
     const payConds = ['p.company_id = $1'];
-
     if (partyType === 'customer') {
       payParams.push(id);
       payConds.push(`(
         (p.invoice_id IS NOT NULL AND EXISTS(
-          SELECT 1 FROM invoices i2
-          WHERE i2.id = p.invoice_id AND i2.customer_id = $${payParams.length}
+          SELECT 1 FROM invoices i2 WHERE i2.id = p.invoice_id AND i2.customer_id = $${payParams.length}
         ))
         OR p.customer_id = $${payParams.length}
       )`);
@@ -544,22 +538,14 @@ const statement = asyncHandler(async (req, res) => {
       payParams.push(id);
       payConds.push(`(
         (p.invoice_id IS NOT NULL AND EXISTS(
-          SELECT 1 FROM invoices i2
-          WHERE i2.id = p.invoice_id AND i2.supplier_id = $${payParams.length}
+          SELECT 1 FROM invoices i2 WHERE i2.id = p.invoice_id AND i2.supplier_id = $${payParams.length}
         ))
         OR p.supplier_id = $${payParams.length}
       )`);
       payConds.push(`p.payment_type = 'pay'`);
     }
-
-    if (date_from) {
-      payParams.push(date_from);
-      payConds.push(`p.payment_date >= $${payParams.length}`);
-    }
-    if (date_to) {
-      payParams.push(date_to);
-      payConds.push(`p.payment_date <= $${payParams.length}`);
-    }
+    if (date_from) { payParams.push(date_from); payConds.push(`p.payment_date >= $${payParams.length}`); }
+    if (date_to)   { payParams.push(date_to);   payConds.push(`p.payment_date <= $${payParams.length}`); }
 
     let payRes = { rows: [], rowCount: 0 };
     try {
@@ -573,77 +559,53 @@ const statement = asyncHandler(async (req, res) => {
          ORDER BY p.payment_date`,
         payParams
       );
-     
     } catch (pErr) {
       console.warn('[pdf:statement] payments query failed (non-fatal):', pErr.message);
     }
 
-    // ═══════════════════════════════════════════
-    // 6) بناء الحركات — تنسيق محاسبي
-    // ═══════════════════════════════════════════
     const transactions = [];
 
-    // ─── الفواتير ───
     for (const inv of invRes.rows) {
       const total = Number(inv.total);
       const isSale = inv.invoice_type === 'sales';
       const isPaid = inv.status === 'paid';
 
       if (partyType === 'customer' && isSale) {
-        // فاتورة مبيعات على العميل — مدين
         transactions.push({
-          date: formatDate(inv.invoice_date) ? formatDate(inv.invoice_date) : '—',
+          date: formatDate(inv.invoice_date) || '—',
           doc_number: inv.invoice_number,
           description: 'عليكم فاتورة مبيعات',
-          debit: total,
-          credit: 0,
-          balance: 0,
+          debit: total, credit: 0, balance: 0,
         });
       } else if (partyType === 'supplier' && !isSale && !isPaid) {
-        // فاتورة مشتريات علينا للمورد — دائن
         transactions.push({
-          date: formatDate(inv.invoice_date) ? formatDate(inv.invoice_date) : '—',
+          date: formatDate(inv.invoice_date) || '—',
           doc_number: inv.invoice_number,
           description: 'لديكم فاتورة مشتريات',
-          debit: 0,
-          credit: total,
-          balance: 0,
+          debit: 0, credit: total, balance: 0,
         });
       }
     }
 
-    // ─── سندات القبض / الصرف ───
     for (const p of payRes.rows) {
       const amt = Number(p.amount);
-
       if (partyType === 'customer') {
-        // سند قبض — دائن (يخفض رصيد العميل)
-        const desc = ` لكم سند قبض ${p.description?.trim()}`;
         transactions.push({
-          date: formatDate(p.payment_date) ? formatDate(p.payment_date) : '—',
+          date: formatDate(p.payment_date) || '—',
           doc_number: p.voucher_number || p.reference || '—',
-          description: desc,
-          debit: 0,
-          credit: amt,
-          balance: 0,
+          description: `لكم سند قبض ${p.description?.trim() || ''}`,
+          debit: 0, credit: amt, balance: 0,
         });
       } else {
-        // سند صرف — مدين (يخفض ديننا للمورد)
-        const desc =`عليكم سند صرف ${p.description?.trim()} `;
         transactions.push({
-          date: formatDate(p.payment_date) ? formatDate(p.payment_date) : '—',
+          date: formatDate(p.payment_date) || '—',
           doc_number: p.voucher_number || p.reference || '—',
-          description: desc,
-          debit: amt,
-          credit: 0,
-          balance: 0,
+          description: `عليكم سند صرف ${p.description?.trim() || ''}`,
+          debit: amt, credit: 0, balance: 0,
         });
       }
     }
 
-    // ═══════════════════════════════════════════
-    // 7) ترتيب + الرصيد التراكمي
-    // ═══════════════════════════════════════════
     transactions.sort((a, b) => a.date.localeCompare(b.date));
 
     let bal = 0;
@@ -652,49 +614,37 @@ const statement = asyncHandler(async (req, res) => {
       t.balance = bal;
     }
 
-
-    // ═══════════════════════════════════════════
-    // 8) توليد PDF
-    // ═══════════════════════════════════════════
     const buffer = await generateStatement({
       company: companyData,
-      docType: 'statement',
-      docNumber: `STMT-${id.slice(0, 8)}`,
-      docDate: formatDate(new Date()),
+      partyType,
       partyTitle: partyType === 'customer' ? 'العميل' : 'المورد',
       party,
+      docNumber: `STMT-${id.slice(0, 8)}`,
+      docDate: formatDate(new Date()),
+      dateFrom: date_from || null,
+      dateTo: date_to || null,
+      openingBalance: 0,
       items: transactions,
-      summary: [
-        {
-          label: 'إجمالي المدين',
-          value: transactions.reduce((s, t) => s + Number(t.debit), 0),
-        },
-        {
-          label: 'إجمالي الدائن',
-          value: transactions.reduce((s, t) => s + Number(t.credit), 0),
-        },
-        {
-          label: 'الرصيد المستحق',
-          value: Math.abs(bal),
-          isTotal: true,
-        },
-      ],
-      currencyCode: company.currency_code || 'YER',
-      extraInfo: {
-        'الفترة': `${date_from || '—'} إلى ${date_to || '—'}`,
+      summary: {
+        totalDebit: transactions.reduce((s, t) => s + Number(t.debit), 0),
+        totalCredit: transactions.reduce((s, t) => s + Number(t.credit), 0),
+        closingBalance: Math.abs(bal),
       },
+      currencyCode: company.currency_code || 'YER',
     });
 
     sendPdf(res, buffer, `statement-${partyType}-${id.slice(0, 8)}`);
   } catch (err) {
     console.error('[pdf:statement] ERROR:', err);
-    console.error('[pdf:statement] STACK:', err.stack);
     throw err;
   } finally {
     client.release();
   }
 });
 
+/* ============================================================
+ * 7) مصروف
+ * ============================================================ */
 const expense = asyncHandler(async (req, res) => {
   const client = await pool.connect();
   try {
@@ -723,10 +673,11 @@ const expense = asyncHandler(async (req, res) => {
     const amountInWords = `${numToArabicWords(exp.amount)} ${
       exp.currency_code === 'YER' ? 'ريال يمني' : exp.currency_code
     } فقط لا غير`;
+
     const buffer = await generateExpense({
       company: companyData,
       expenseNumber: exp.expense_number,
-      expenseDate: formatDate(exp.expense_date),
+      expenseDate: exp.expense_date,
       expenseCategory: exp.expense_category,
       accountCode: exp.account_code,
       accountName: exp.account_name,
@@ -744,16 +695,16 @@ const expense = asyncHandler(async (req, res) => {
 
     sendPdf(res, buffer, `expense-${exp.expense_number}`);
   } catch (err) {
-    console.error('[pdf:statement] ERROR:', err);
-    console.error('[pdf:statement] STACK:', err.stack);
+    console.error('[pdf:expense] ERROR:', err);
     throw err;
-  }finally {
+  } finally {
     client.release();
   }
 });
-// ═══════════════════════════════════════════
-// ميزان مراجعة
-// ═══════════════════════════════════════════
+
+/* ============================================================
+ * 8) ميزان مراجعة
+ * ============================================================ */
 const trialBalance = asyncHandler(async (req, res) => {
   const client = await pool.connect();
   try {
@@ -766,7 +717,6 @@ const trialBalance = asyncHandler(async (req, res) => {
     const company = await getCompany(client, companyId);
     const companyData = await companyPdfData(company);
 
-    // تمرير بيانات الحسابات مباشرة (بدون تحويل)
     const items = data.accounts.map((a) => ({
       code: a.code,
       name: a.name,
@@ -777,17 +727,15 @@ const trialBalance = asyncHandler(async (req, res) => {
 
     const buffer = await generateTrialBalance({
       company: companyData,
-      docType: 'trial_balance',
-      docNumber: `TB-${Date.now().toString().slice(-6)}`,
-      docDate: (date_to) || new Date().toISOString().slice(0, 10),
-      partyTitle: 'الفترة',
-      party: { name: `${date_from || '—'} إلى ${date_to || '—'}` },
+      reportNumber: `TB-${Date.now().toString().slice(-6)}`,
+      dateFrom: date_from || null,
+      dateTo: date_to || new Date().toISOString().slice(0, 10),
+      reportDate: formatDate(new Date()),
       items,
-      summary: [
-        { label: 'إجمالي المدين', value: data.totals.debit },
-        { label: 'إجمالي الدائن', value: data.totals.credit },
-        { label: 'الحالة', value: data.totals.balanced ? 'متوازن ✅' : `فرق ${data.totals.difference}`, isTotal: true },
-      ],
+      summary: {
+        total_debit: data.totals.debit,
+        total_credit: data.totals.credit,
+      },
       currencyCode: company.currency_code || 'YER',
     });
 
@@ -797,13 +745,17 @@ const trialBalance = asyncHandler(async (req, res) => {
   }
 });
 
-const SalesOrder = asyncHandler(async (req, res) => {
+/* ============================================================
+ * 9) أمر بيع
+ * ============================================================ */
+const salesOrder = asyncHandler(async (req, res) => {
   const client = await pool.connect();
+
   try {
     const { id } = req.params;
     const companyId = req.user.company_id;
 
-    const order = await SalesOrder.findById(companyId, id);
+    const order = await SalesOrderModel.findById(companyId, id);
 
     if (!order) {
       return res.status(404).json({
@@ -815,12 +767,20 @@ const SalesOrder = asyncHandler(async (req, res) => {
     const company = await getCompany(client, companyId);
     const companyData = await companyPdfData(company);
 
+    // تنسيق التواريخ قبل إرسالها إلى دالة PDF
+    const formattedOrder = {
+      ...order,
+      order_date: formatDate(order.order_date),
+      created_at: formatDate(order.created_at),
+    };
+
     const buffer = await generateSalesOrder({
       company: companyData,
-      order,
+      order: formattedOrder,
     });
 
     sendPdf(res, buffer, `sales-order-${order.order_number}`);
+
   } catch (err) {
     console.error('[pdf:sales-order] ERROR:', err);
     console.error('[pdf:sales-order] STACK:', err.stack);
@@ -830,7 +790,187 @@ const SalesOrder = asyncHandler(async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════
+// 10) إشعار دائن / مدين
+// ═══════════════════════════════════════════════════════════════
+
+const creditNote = asyncHandler(async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    const companyId = req.user.company_id;
+
+    const note = await NoteModel.getById(client, companyId, id);
+    if (!note) throw new ApiError(404, 'Note not found');
+
+    const company = await getCompany(client, companyId);
+    const companyData = await companyPdfData(company);
+
+     const formattedNote = {
+      ...note,
+      note_date: formatDate(note.note_date),
+      created_at: formatDate(note.created_at),
+    };
+    const currencyCode = note.currency_code || company.currency_code || 'YER';
+
+    const amountInWords = `${numToArabicWords(note.total)} ${
+      currencyCode === 'YER' ? 'ريال يمني' : currencyCode
+    } فقط لا غير`;
+
+    const isCredit = note.note_type === 'credit';
+    const generator = isCredit ? generateCreditNote : generateDebitNote;
+
+    const buffer = await generator({
+      company: companyData,
+      note:formattedNote,
+      currencyCode,
+      amountInWords,
+    });
+
+    sendPdf(res, buffer, `${isCredit ? 'credit-note' : 'debit-note'}-${note.note_number}`);
+  } catch (err) {
+    console.error('[pdf:creditNote] ERROR:', err);
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 11) إذن استلام
+// ═══════════════════════════════════════════════════════════════
+
+const goodsReceipt = asyncHandler(async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { id } = req.params;
+    const companyId = req.user.company_id;
+
+    const gr = await GoodsReceiptService.getById(client, companyId, id);
+    if (!gr) throw new ApiError(404, 'Goods receipt not found');
+
+    const company = await getCompany(client, companyId);
+    const companyData = await companyPdfData(company);
+
+    const currencyCode = gr.currency_code || company.currency_code || 'YER';
+
+    const amountInWords = `${numToArabicWords(gr.total)} ${
+      currencyCode === 'YER' ? 'ريال يمني' : currencyCode
+    } فقط لا غير`;
+
+    // تنسيق التواريخ قبل إرسالها
+    const formattedReceipt = {
+      ...gr,
+      receipt_date: gr.receipt_date ? formatDate(gr.receipt_date) : '',
+      created_at: gr.created_at ? formatDate(gr.created_at) : '',
+    };
+
+    const buffer = await generateGoodsReceipt({
+      company: companyData,
+      receipt: formattedReceipt,
+      currencyCode,
+      amountInWords,
+    });
+
+    sendPdf(res, buffer, `goods-receipt-${gr.receipt_number}`);
+  } catch (err) {
+    console.error('[pdf:goodsReceipt] ERROR:', err);
+    console.error('[pdf:goodsReceipt] STACK:', err.stack);
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 12) إذن تحويل
+// ═══════════════════════════════════════════════════════════════
+
+const stockTransfer = asyncHandler(async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { id } = req.params;
+    const companyId = req.user.company_id;
+
+    const transfer = await StockTransferService.getById(companyId, id, client);
+    if (!transfer) throw new ApiError(404, 'Stock transfer not found');
+
+    const company = await getCompany(client, companyId);
+    const companyData = await companyPdfData(company);
+
+    // تنسيق التواريخ قبل إرسالها
+    const formattedTransfer = {
+      ...transfer,
+      transfer_date: transfer.transfer_date
+        ? formatDate(transfer.transfer_date)
+        : '',
+      created_at: transfer.created_at
+        ? formatDate(transfer.created_at)
+        : '',
+    };
+
+    const buffer = await generateStockTransfer({
+      company: companyData,
+      transfer: formattedTransfer,
+    });
+
+    sendPdf(res, buffer, `stock-transfer-${transfer.transfer_number}`);
+  } catch (err) {
+    console.error('[pdf:stockTransfer] ERROR:', err);
+    console.error('[pdf:stockTransfer] STACK:', err.stack);
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 13) تسوية جرد
+// ═══════════════════════════════════════════════════════════════
+
+const stockAdjustment = asyncHandler(async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { id } = req.params;
+    const companyId = req.user.company_id;
+
+    const adjustment = await StockAdjustmentService.getById(client, companyId, id);
+    if (!adjustment) throw new ApiError(404, 'Stock adjustment not found');
+
+    const company = await getCompany(client, companyId);
+    const companyData = await companyPdfData(company);
+
+    // تنسيق التواريخ قبل إرسالها
+    const formattedAdjustment = {
+      ...adjustment,
+      adjustment_date: adjustment.adjustment_date
+        ? formatDate(adjustment.adjustment_date)
+        : '',
+      created_at: adjustment.created_at
+        ? formatDate(adjustment.created_at)
+        : '',
+    };
+
+    const buffer = await generateStockAdjustment({
+      company: companyData,
+      adjustment: formattedAdjustment,
+    });
+
+    sendPdf(res, buffer, `stock-adjustment-${adjustment.adjustment_number}`);
+  } catch (err) {
+    console.error('[pdf:stockAdjustment] ERROR:', err);
+    console.error('[pdf:stockAdjustment] STACK:', err.stack);
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = {
+  // موجود
   invoice,
   returnDoc,
   payment,
@@ -839,5 +979,10 @@ module.exports = {
   statement,
   trialBalance,
   expense,
-  SalesOrder,
+  salesOrder,
+  // 🆕
+  creditNote,
+  goodsReceipt,
+  stockTransfer,
+  stockAdjustment,
 };

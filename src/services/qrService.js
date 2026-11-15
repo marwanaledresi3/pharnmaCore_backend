@@ -1,21 +1,33 @@
 require('dotenv').config();
-const crypto = require('crypto');
+const crypto = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const QRCode = require('qrcode');
 const ApiError = require('../errors/ApiError');
 
-const SECRET = process.env.QR_SIGNING_SECRET || 'your-super-secret-key-change-this-in-production-min-32-chars';
+// ═══════════════════════════════════════════════════════════════════════════
+// الإعدادات
+// ═══════════════════════════════════════════════════════════════════════════
+
+const SECRET = process.env.QR_SIGNING_SECRET;
+
+if (!SECRET || SECRET.length < 32) {
+  throw new ApiError(
+    '[qrService] QR_SIGNING_SECRET must be set in environment and at least 32 characters. ' +
+    'Generate a secure key with: node -e "console.log(require(\'bcryptjs\').randomBytes(32).toString(\'hex\'))"'
+  );
+}
+
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 const DEFAULT_TTL_DAYS = 7;
 
-if (!SECRET) {
-  throw new Error('[qrService] QR_SIGNING_SECRET أو JWT_SECRET غير معرّف في البيئة');
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// QRService
+// ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * خدمة توليد والتحقق من رموز QR للتسليم.
  *
- * الوضع:
+ * الأوضاع:
  * - authenticated: يتطلب تسجيل دخول مستخدم من شركة المشتري
  * - public: رابط عام + PIN (6 أرقام)
  * - both: يدعم الاثنين
@@ -26,15 +38,22 @@ class QRService {
    *
    * @param {object} client - pg client (داخل معاملة)
    * @param {object} params
-   * @param {object} params.order - صف purchase_orders (يحتوي id, order_number, company_id, supplier_company_id, total)
+   * @param {object} params.order - صف purchase_orders (id, order_number, company_id, supplier_company_id, total)
    * @param {string} params.mode - 'authenticated' | 'public' | 'both'
    * @param {number} [params.ttlDays] - صلاحية بالأيام (افتراضي 7)
    * @param {string} params.createdBy - user id للمورد
-   * @returns {Promise<{token, url, qrDataUrl, pin, expiresAt, deliveryTokenId}>}
    */
-  static async generateForOrder(client, { order, mode = 'both', ttlDays = DEFAULT_TTL_DAYS, createdBy }) {
+  static async generateForOrder(client, {
+    order,
+    mode = 'both',
+    ttlDays = DEFAULT_TTL_DAYS,
+    createdBy,
+  }) {
     if (!order || !order.id) {
       throw new ApiError(400, 'Order is required to generate QR');
+    }
+    if (!['authenticated', 'public', 'both'].includes(mode)) {
+      throw new ApiError(400, `Invalid QR mode: ${mode}`);
     }
 
     const jti = crypto.randomBytes(16).toString('hex');
@@ -103,15 +122,10 @@ class QRService {
 
   /**
    * يتحقق من token ويعيد الحمولة + صف delivery_tokens.
-   * لا يعلّم كمستخدم — هذا يتم في confirm.
+   * لا يعلّم كمستخدم — هذا يتم في markUsed.
    *
-   * @param {object} client
-   * @param {string} token
-   * @param {object} opts
-   * @param {'authenticated'|'public'} opts.mode - وضع التحقق
-   * @param {string} [opts.pin] - مطلوب للوضع العام
-   * @param {string} [opts.userCompanyId] - مطلوب للوضع المصادق
-   * @returns {Promise<{payload, deliveryToken}>}
+   * ⚠️ لا يستخدم FOR UPDATE (قد يُستدعى من peek في المعاينة).
+   *    markUsed آمنة لأنها WHERE used_at IS NULL.
    */
   static async verify(client, token, opts = {}) {
     const { mode = 'authenticated', pin, userCompanyId } = opts;
@@ -120,7 +134,7 @@ class QRService {
       throw new ApiError(400, 'Missing delivery token');
     }
 
-    // 1. تحقق من التوقيع
+    // 1) تحقق من التوقيع
     let payload;
     try {
       payload = jwt.verify(token, SECRET, {
@@ -134,12 +148,11 @@ class QRService {
       throw new ApiError(401, 'رمز التسليم غير صالح');
     }
 
-    // 2. ابحث في قاعدة البيانات
+    // 2) ابحث في قاعدة البيانات (بدون FOR UPDATE)
     const tokenHash = QRService._sha256(token);
     const r = await client.query(
       `SELECT * FROM delivery_tokens
-       WHERE order_id = $1 AND token_jti = $2 AND token_hash = $3
-       FOR UPDATE`,
+       WHERE order_id = $1 AND token_jti = $2 AND token_hash = $3`,
       [payload.order_id, payload.jti, tokenHash]
     );
     const deliveryToken = r.rows[0];
@@ -157,7 +170,7 @@ class QRService {
       throw new ApiError(410, 'انتهت صلاحية رمز التسليم');
     }
 
-    // 3. تحقق من الوضع
+    // 3) تحقق من الوضع
     const allowedModes = deliveryToken.mode === 'both'
       ? ['authenticated', 'public']
       : [deliveryToken.mode];
@@ -166,7 +179,7 @@ class QRService {
       throw new ApiError(403, `رمز التسليم لا يدعم وضع "${mode}"`);
     }
 
-    // 4. وضع المصادقة: تحقق أن المستخدم من شركة المشتري
+    // 4) وضع المصادقة: تحقق أن المستخدم من شركة المشتري
     if (mode === 'authenticated') {
       if (!userCompanyId) {
         throw new ApiError(401, 'تسجيل الدخول مطلوب');
@@ -176,7 +189,7 @@ class QRService {
       }
     }
 
-    // 5. وضع عام: تحقق من PIN
+    // 5) وضع عام: تحقق من PIN
     if (mode === 'public') {
       if (!deliveryToken.pin_hash) {
         throw new ApiError(403, 'هذا الرمز لا يدعم الوضع العام');
@@ -195,30 +208,42 @@ class QRService {
 
   /**
    * يعلّم token كمستخدم (يُستدعى داخل confirm).
+   * يتحقق من rowCount لمنع race conditions.
    */
   static async markUsed(client, deliveryTokenId, { userId, mode }) {
-    await client.query(
+    const r = await client.query(
       `UPDATE delivery_tokens
        SET used_at = NOW(), used_by = $1, used_mode = $2
-       WHERE id = $3 AND used_at IS NULL`,
+       WHERE id = $3 AND used_at IS NULL AND revoked_at IS NULL
+       RETURNING id, used_at, used_mode`,
       [userId || null, mode || null, deliveryTokenId]
     );
+    if (!r.rowCount) {
+      throw new ApiError(
+        409,
+        'Delivery token already used, revoked, or not found — cannot mark as used'
+      );
+    }
+    return r.rows[0];
   }
 
   /**
    * يلغي كل الرموز النشطة لطلب (مثلاً عند cancel).
    */
   static async revokeForOrder(client, orderId, { userId, reason }) {
-    await client.query(
+    const r = await client.query(
       `UPDATE delivery_tokens
        SET revoked_at = NOW(), revoked_by = $1, revoked_reason = $2
-       WHERE order_id = $3 AND used_at IS NULL AND revoked_at IS NULL`,
+       WHERE order_id = $3 AND used_at IS NULL AND revoked_at IS NULL
+       RETURNING id`,
       [userId || null, reason || null, orderId]
     );
+    return { revoked: r.rowCount };
   }
 
   /**
    * يتحقق من صلاحية token دون استهلاكه (للمعاينة).
+   * لا يعيد الرموز الملغاة أو المستخدمة.
    */
   static async peek(client, token) {
     let payload;
@@ -234,12 +259,17 @@ class QRService {
     const tokenHash = QRService._sha256(token);
     const r = await client.query(
       `SELECT dt.*, po.order_number, po.total, po.status,
-              bc.name AS buyer_company_name, sc.name AS supplier_company_name
+              bc.name AS buyer_company_name,
+              sc.name AS supplier_company_name
        FROM delivery_tokens dt
        JOIN purchase_orders po ON po.id = dt.order_id
        JOIN companies bc ON bc.id = po.company_id
        LEFT JOIN companies sc ON sc.id = po.supplier_company_id
-       WHERE dt.order_id = $1 AND dt.token_jti = $2 AND dt.token_hash = $3`,
+       WHERE dt.order_id = $1
+         AND dt.token_jti = $2
+         AND dt.token_hash = $3
+         AND dt.revoked_at IS NULL
+         AND dt.used_at IS NULL`,
       [payload.order_id, payload.jti, tokenHash]
     );
 
@@ -247,14 +277,15 @@ class QRService {
     return { payload, deliveryToken: r.rows[0] };
   }
 
-  // ============ Helpers ============
+  // ═══════════════════════════════════════════════════════════════════════
+  // Helpers
+  // ═══════════════════════════════════════════════════════════════════════
 
   static _sha256(str) {
     return crypto.createHash('sha256').update(str).digest('hex');
   }
 
   static async _hashPin(pin) {
-    // bcrypt اختياري — نستخدم scrypt المدمج
     const salt = crypto.randomBytes(16).toString('hex');
     return new Promise((resolve, reject) => {
       crypto.scrypt(pin, salt, 64, (err, derivedKey) => {

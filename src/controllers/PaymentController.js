@@ -3,65 +3,82 @@ const ApiError = require('../errors/ApiError');
 const Payment = require('../models/Payment');
 const service = require('../services/paymentService');
 
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /payments
+// ═══════════════════════════════════════════════════════════════════════════
 const list = asyncHandler(async (req, res) => {
-  res.json({ success: true, data: await Payment.list(req.user.company_id, req.query) });
+  const data = await Payment.list(req.user.company_id, req.query);
+  res.json({ success: true, data });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /payments
+//
+// يوجّه الطلب إلى الدالة المناسبة:
+//   1) بدون invoice_id → سند يدوي (createManualPayment)
+//   2) invoice_id + payment_type='pay' → فاتورة شراء (createForPurchaseInvoice)
+//   3) invoice_id + payment_type='receive' → فاتورة بيع (createForInvoice)
+// ═══════════════════════════════════════════════════════════════════════════
 const create = asyncHandler(async (req, res) => {
   const body = req.body;
 
-  try {
-
-    if (!body.invoice_id) {
-
-      if (!body.description || !String(body.description).trim()) {
-        throw new ApiError(400, 'البيان مطلوب');
-      }
-      if (!body.payment_type) {
-        throw new ApiError(400, 'payment_type is required for manual payments');
-      }
-      if (body.payment_type === 'receive' && !body.customer_id) {
-        throw new ApiError(400, 'customer_id is required');
-      }
-      if (body.payment_type === 'pay' && !body.supplier_id) {
-        throw new ApiError(400, 'supplier_id is required');
-      }
-
-      const result = await service.createManualPayment(
-        req.user.company_id,
-        req.user.id,
-        body
-      );
-      return res.status(201).json({ success: true, data: result });
+  // ─── 1) سند يدوي (بدون فاتورة) ─────────────────────────────────────
+  if (!body.invoice_id) {
+    if (!body.description || !String(body.description).trim()) {
+      throw new ApiError(400, 'البيان مطلوب');
+    }
+    if (!body.payment_type) {
+      throw new ApiError(400, 'payment_type is required for manual payments');
+    }
+    if (body.payment_type === 'receive' && !body.customer_id) {
+      throw new ApiError(400, 'customer_id is required');
+    }
+    if (body.payment_type === 'pay' && !body.supplier_id) {
+      throw new ApiError(400, 'supplier_id is required');
     }
 
-
-    if (body.payment_type === 'pay') {
-      const result = await service.createForPurchaseInvoice(
-        req.user.company_id,
-        req.user.id,
-        body
-      );
-      return res.status(201).json({ success: true, data: result });
-    }
-
-    const result = await service.createForInvoice(
+    const result = await service.createManualPayment(
       req.user.company_id,
       req.user.id,
       body
     );
-    res.status(201).json({ success: true, data: result });
-  } catch (err) {
-    console.error('[payment:create] ERROR:', err);
-    console.error('[payment:create] STACK:', err.stack);
-    throw err;
+    return res.status(201).json({ success: true, data: result });
   }
+
+  // ─── 2) فاتورة شراء (pay) ──────────────────────────────────────────
+  if (body.payment_type === 'pay') {
+    const result = await service.createForPurchaseInvoice(
+      req.user.company_id,
+      req.user.id,
+      body
+    );
+    return res.status(201).json({ success: true, data: result });
+  }
+
+  // ─── 3) فاتورة بيع (receive) — default ─────────────────────────────
+  const result = await service.createForInvoice(
+    req.user.company_id,
+    req.user.id,
+    body
+  );
+  res.status(201).json({ success: true, data: result });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DELETE /payments/:id
+// ═══════════════════════════════════════════════════════════════════════════
 const remove = asyncHandler(async (req, res) => {
-  const result = await service.remove(req.user.company_id, req.params.id);
+  const result = await service.remove(
+    req.user.company_id,
+    req.user.id,
+    req.params.id
+  );
   res.json({ success: true, data: result });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /payments/refund
+// ═══════════════════════════════════════════════════════════════════════════
 const refundToCustomer = asyncHandler(async (req, res) => {
   const result = await service.refundToCustomer(
     req.user.company_id,
@@ -71,6 +88,9 @@ const refundToCustomer = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: result });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /payments/apply-credit
+// ═══════════════════════════════════════════════════════════════════════════
 const applyCredit = asyncHandler(async (req, res) => {
   const result = await service.applyCreditToInvoice(
     req.user.company_id,
@@ -80,4 +100,10 @@ const applyCredit = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: result });
 });
 
-module.exports = { list, create, remove, refundToCustomer, applyCredit };
+module.exports = {
+  list,
+  create,
+  remove,
+  refundToCustomer,
+  applyCredit,
+};

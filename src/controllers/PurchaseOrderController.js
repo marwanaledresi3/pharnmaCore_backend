@@ -38,7 +38,14 @@ const cancel = asyncHandler(async (req, res) => {
 });
 
 const getIncoming = asyncHandler(async (req, res) => {
-  const data = await PurchaseOrder.getIncoming(req.user.company_id);
+  const data = await PurchaseOrder.getIncoming(req.user.company_id, {
+    status: req.query.status,
+    page: req.query.page,
+    limit: req.query.limit,
+    search: req.query.search,
+    date_from: req.query.date_from,
+    date_to: req.query.date_to,
+  });
   res.json({ success: true, data });
 });
 

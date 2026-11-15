@@ -177,6 +177,12 @@ class Branch {
 }
 
   static async delete(client, companyId, id) {
+    
+// داخل معاملة
+const cnt = await client.query(`SELECT COUNT(*)::int AS c FROM branches WHERE company_id = $1`, [companyId]);
+if (cnt.rows[0].c <= 1) throw new Error('cannot_delete_last');
+const row = await client.query(`SELECT is_main FROM branches WHERE id=$1 AND company_id=$2`, [id, companyId]);
+if (row.rows[0]?.is_main) throw new Error('cannot_delete_main');
     const r = await client.query(
       `DELETE FROM branches WHERE id = $1 AND company_id = $2 RETURNING id`,
       [id, companyId]

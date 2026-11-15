@@ -26,6 +26,6 @@ router.post('/mark-all-read', authorize('notifications.mark_read'), ctrl.markAll
 router.delete('/:id', authorize('notifications.mark_read'),
   [param('id').isUUID()], validate, ctrl.remove);
 
-router.post('/scan', ctrl.scan); // حماية إضافية عبر requireCompany + يمكن إضافة authorize لاحقاً
+router.post('/scan', authorize('notifications.mark_read'), ctrl.scan); 
 
 module.exports = router;

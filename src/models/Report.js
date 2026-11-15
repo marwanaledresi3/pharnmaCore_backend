@@ -1,141 +1,160 @@
-const {pool} = require('../config/pool');
+// models/Report.js
+const { pool } = require('../config/pool');
+
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
-class Report {
-  /**
-   * ═══════════════════════════════════════════
-   * Dashboard - ملخص شامل
-   * ═══════════════════════════════════════════
-   */
- static async dashboard(companyId) {
-  const [
-    salesToday, salesMonth,
-    purchasesMonth,
-    receivables, payables,
-    cashBalance, bankBalance,
-    lowStockCount, expiringCount,
-    overdueInvoices,
-  ] = await Promise.all([
-    // مبيعات اليوم
-    pool.query(
-      `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
-       FROM invoices
-       WHERE company_id = $1 AND invoice_type = 'sales'
-         AND invoice_date = CURRENT_DATE AND status <> 'cancelled'`,
-      [companyId]
-    ),
-    // مبيعات الشهر
-    pool.query(
-      `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
-       FROM invoices
-       WHERE company_id = $1 AND invoice_type = 'sales'
-         AND DATE_TRUNC('month', invoice_date) = DATE_TRUNC('month', CURRENT_DATE)
-         AND status <> 'cancelled'`,
-      [companyId]
-    ),
-    // مشتريات الشهر
-    pool.query(
-      `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
-       FROM invoices
-       WHERE company_id = $1 AND invoice_type = 'purchase'
-         AND DATE_TRUNC('month', invoice_date) = DATE_TRUNC('month', CURRENT_DATE)
-         AND status <> 'cancelled'`,
-      [companyId]
-    ),
-    // ذمم مدينة (من القيود المحاسبية — أدق)
-    pool.query(
-      `SELECT COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
-       FROM journal_entry_lines jel
-       JOIN journal_entries je ON je.id = jel.journal_entry_id
-       JOIN chart_of_accounts a ON a.id = jel.account_id
-       WHERE je.company_id = $1 AND je.status = 'posted'
-         AND a.code = '112'`,
-      [companyId]
-    ),
-    // ذمم دائنة (من القيود المحاسبية)
-    pool.query(
-      `SELECT COALESCE(SUM(jel.credit - jel.debit), 0)::numeric AS balance
-       FROM journal_entry_lines jel
-       JOIN journal_entries je ON je.id = jel.journal_entry_id
-       JOIN chart_of_accounts a ON a.id = jel.account_id
-       WHERE je.company_id = $1 AND je.status = 'posted'
-         AND a.code = '211'`,
-      [companyId]
-    ),
-    // رصيد الصندوق (1111)
-    pool.query(
-      `SELECT COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
-       FROM journal_entry_lines jel
-       JOIN journal_entries je ON je.id = jel.journal_entry_id
-       JOIN chart_of_accounts a ON a.id = jel.account_id
-       WHERE je.company_id = $1 AND je.status = 'posted'
-         AND a.code = '1111'`,
-      [companyId]
-    ),
-    // رصيد البنك (1112)
-    pool.query(
-      `SELECT COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
-       FROM journal_entry_lines jel
-       JOIN journal_entries je ON je.id = jel.journal_entry_id
-       JOIN chart_of_accounts a ON a.id = jel.account_id
-       WHERE je.company_id = $1 AND je.status = 'posted'
-         AND a.code = '1112'`,
-      [companyId]
-    ),
-    // منتجات تحت الحد الأدنى
-    pool.query(
-      `SELECT COUNT(*)::int AS count
-       FROM products p
-       WHERE p.company_id = $1 AND p.is_active = TRUE
-         AND COALESCE((SELECT SUM(quantity) FROM product_batches WHERE product_id = p.id), 0) < p.min_stock_level`,
-      [companyId]
-    ),
-    // batches قرب الانتهاء (30 يوم)
-    pool.query(
-      `SELECT COUNT(*)::int AS count
-       FROM product_batches
-       WHERE company_id = $1 AND quantity > 0
-         AND expiry_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'`,
-      [companyId]
-    ),
-    // فواتير متأخرة
-    pool.query(
-      `SELECT COUNT(*)::int AS count, COALESCE(SUM(total - paid_amount), 0)::numeric AS amount
-       FROM invoices
-       WHERE company_id = $1 AND status IN ('unpaid', 'partial')
-         AND due_date < CURRENT_DATE`,
-      [companyId]
-    ),
-  ]);
 
-  // مرتجعات الشهر
-  const returnsMonth = await pool.query(
-    `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
-     FROM returns
-     WHERE company_id = $1 AND status = 'confirmed'
-       AND DATE_TRUNC('month', return_date) = DATE_TRUNC('month', CURRENT_DATE)`,
-    [companyId]
+/* ============================================================
+ * Helper: يبني قائمة معرّفات حساب + أبنائه (recursive)
+ * ============================================================ */
+async function accountTreeIds(companyId, code) {
+  const r = await pool.query(
+    `WITH RECURSIVE tree AS (
+       SELECT id FROM chart_of_accounts
+       WHERE company_id = $1 AND code = $2
+       UNION ALL
+       SELECT c.id FROM chart_of_accounts c
+       JOIN tree t ON c.parent_id = t.id
+       WHERE c.company_id = $1
+     )
+     SELECT id FROM tree`,
+    [companyId, code]
   );
-
-  return {
-    sales_today: salesToday.rows[0],
-    sales_month: salesMonth.rows[0],
-    purchases_month: purchasesMonth.rows[0],
-    receivables: receivables.rows[0].balance,
-    payables: payables.rows[0].balance,
-    cash_balance: cashBalance.rows[0].balance,
-    bank_balance: bankBalance.rows[0].balance,
-    low_stock_count: lowStockCount.rows[0].count,
-    expiring_batches_count: expiringCount.rows[0].count,
-    overdue_invoices: overdueInvoices.rows[0],
-    returns_month: returnsMonth.rows[0],
-  };
+  return r.rows.map((x) => x.id);
 }
 
-  /**
-   * ═══════════════════════════════════════════
-   * Balance Sheet - الميزانية العمومية
-   * ═══════════════════════════════════════════
-   */
+class Report {
+  /* ============================================================
+   * Dashboard
+   * ============================================================ */
+  static async dashboard(companyId, { as_of = null } = {}) {
+    const [arIds, apIds, cashIds, bankIds] = await Promise.all([
+      accountTreeIds(companyId, '112'),
+      accountTreeIds(companyId, '211'),
+      accountTreeIds(companyId, '1111'),
+      accountTreeIds(companyId, '1112'),
+    ]);
+
+    const [
+      salesToday, salesMonth,
+      purchasesMonth,
+      receivables, payables,
+      cashBalance, bankBalance,
+      lowStockCount, expiringCount,
+      overdueInvoices,
+    ] = await Promise.all([
+      pool.query(
+        `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
+         FROM invoices
+         WHERE company_id = $1 AND invoice_type = 'sales'
+           AND invoice_date = CURRENT_DATE AND status <> 'cancelled'`,
+        [companyId]
+      ),
+      pool.query(
+        `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
+         FROM invoices
+         WHERE company_id = $1 AND invoice_type = 'sales'
+           AND DATE_TRUNC('month', invoice_date) = DATE_TRUNC('month', CURRENT_DATE)
+           AND status <> 'cancelled'`,
+        [companyId]
+      ),
+      pool.query(
+        `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
+         FROM invoices
+         WHERE company_id = $1 AND invoice_type = 'purchase'
+           AND DATE_TRUNC('month', invoice_date) = DATE_TRUNC('month', CURRENT_DATE)
+           AND status <> 'cancelled'`,
+        [companyId]
+      ),
+      arIds.length
+        ? pool.query(
+            `SELECT COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
+             FROM journal_entry_lines jel
+             JOIN journal_entries je ON je.id = jel.journal_entry_id
+             WHERE je.company_id = $1 AND je.status = 'posted'
+               AND jel.account_id = ANY($2::uuid[])`,
+            [companyId, arIds]
+          )
+        : Promise.resolve({ rows: [{ balance: 0 }] }),
+      apIds.length
+        ? pool.query(
+            `SELECT COALESCE(SUM(jel.credit - jel.debit), 0)::numeric AS balance
+             FROM journal_entry_lines jel
+             JOIN journal_entries je ON je.id = jel.journal_entry_id
+             WHERE je.company_id = $1 AND je.status = 'posted'
+               AND jel.account_id = ANY($2::uuid[])`,
+            [companyId, apIds]
+          )
+        : Promise.resolve({ rows: [{ balance: 0 }] }),
+      cashIds.length
+        ? pool.query(
+            `SELECT COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
+             FROM journal_entry_lines jel
+             JOIN journal_entries je ON je.id = jel.journal_entry_id
+             WHERE je.company_id = $1 AND je.status = 'posted'
+               AND jel.account_id = ANY($2::uuid[])`,
+            [companyId, cashIds]
+          )
+        : Promise.resolve({ rows: [{ balance: 0 }] }),
+      bankIds.length
+        ? pool.query(
+            `SELECT COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
+             FROM journal_entry_lines jel
+             JOIN journal_entries je ON je.id = jel.journal_entry_id
+             WHERE je.company_id = $1 AND je.status = 'posted'
+               AND jel.account_id = ANY($2::uuid[])`,
+            [companyId, bankIds]
+          )
+        : Promise.resolve({ rows: [{ balance: 0 }] }),
+      pool.query(
+        `SELECT COUNT(*)::int AS count
+         FROM products p
+         WHERE p.company_id = $1 AND p.is_active = TRUE
+           AND COALESCE((SELECT SUM(quantity) FROM product_batches WHERE product_id = p.id), 0) < p.min_stock_level`,
+        [companyId]
+      ),
+      pool.query(
+        `SELECT COUNT(*)::int AS count
+         FROM product_batches
+         WHERE company_id = $1 AND quantity > 0
+           AND expiry_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'`,
+        [companyId]
+      ),
+      pool.query(
+        `SELECT COUNT(*)::int AS count, COALESCE(SUM(total - paid_amount), 0)::numeric AS amount
+         FROM invoices
+         WHERE company_id = $1 AND status IN ('unpaid', 'partial')
+           AND due_date < CURRENT_DATE`,
+        [companyId]
+      ),
+    ]);
+
+    const returnsMonth = await pool.query(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(total), 0)::numeric AS amount
+       FROM returns
+       WHERE company_id = $1 AND status = 'confirmed'
+         AND DATE_TRUNC('month', return_date) = DATE_TRUNC('month', CURRENT_DATE)`,
+      [companyId]
+    );
+
+    return {
+      sales_today: salesToday.rows[0],
+      sales_month: salesMonth.rows[0],
+      purchases_month: purchasesMonth.rows[0],
+      receivables: receivables.rows[0].balance,
+      payables: payables.rows[0].balance,
+      cash_balance: cashBalance.rows[0].balance,
+      bank_balance: bankBalance.rows[0].balance,
+      low_stock_count: lowStockCount.rows[0].count,
+      expiring_batches_count: expiringCount.rows[0].count,
+      overdue_invoices: overdueInvoices.rows[0],
+      returns_month: returnsMonth.rows[0],
+    };
+  }
+
+  /* ============================================================
+   * Balance Sheet — INNER JOIN + أرباح محتجزة
+   * ✅ FIX #6: يحسب net_profit (revenue - expense) ويضيفه لـ equity
+   * ============================================================ */
   static async balanceSheet(companyId, { date_to } = {}) {
     const params = [companyId];
     const conds = ['je.company_id = $1', `je.status = 'posted'`];
@@ -148,22 +167,32 @@ class Report {
       `SELECT a.account_type, a.code, a.name,
               COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
        FROM chart_of_accounts a
-       LEFT JOIN journal_entry_lines jel ON jel.account_id = a.id
-       LEFT JOIN journal_entries je ON je.id = jel.journal_entry_id AND ${conds.join(' AND ')}
+       INNER JOIN journal_entry_lines jel ON jel.account_id = a.id
+       INNER JOIN journal_entries je ON je.id = jel.journal_entry_id
        WHERE a.company_id = $1
-         AND a.account_type IN ('asset', 'liability', 'equity')
-       GROUP BY a.id
+         AND a.account_type IN ('asset', 'liability', 'equity', 'revenue', 'expense')
+         AND ${conds.join(' AND ')}
+       GROUP BY a.id, a.account_type, a.code, a.name
        ORDER BY a.account_type, a.code`,
       params
     );
 
-    // تصنيف حسب النوع
     const assets = [];
     const liabilities = [];
     const equity = [];
+    let totalRevenue = 0;
+    let totalExpense = 0;
 
     for (const row of r.rows) {
-      // الأصول رصيدها مدين (+)، الخصوم وحقوق الملكية رصيدها دائن (-)
+      if (row.account_type === 'revenue') {
+        totalRevenue += -Number(row.balance);  // revenue له رصيد credit
+        continue;
+      }
+      if (row.account_type === 'expense') {
+        totalExpense += Number(row.balance);
+        continue;
+      }
+
       const normalBalance = row.account_type === 'asset'
         ? Number(row.balance)
         : -Number(row.balance);
@@ -171,7 +200,7 @@ class Report {
       const item = {
         code: row.code,
         name: row.name,
-        balance: normalBalance,
+        balance: round2(normalBalance),
       };
 
       if (row.account_type === 'asset') assets.push(item);
@@ -179,9 +208,19 @@ class Report {
       else equity.push(item);
     }
 
-    const totalAssets = assets.reduce((s, a) => s + a.balance, 0);
-    const totalLiabilities = liabilities.reduce((s, a) => s + a.balance, 0);
-    const totalEquity = equity.reduce((s, a) => s + a.balance, 0);
+    // ✅ FIX #6: أرباح محتجزة
+    const netProfit = round2(totalRevenue - totalExpense);
+    if (Math.abs(netProfit) > 0.01) {
+      equity.push({
+        code: '3999',
+        name: 'أرباح محتجزة (صافي ربح الفترة)',
+        balance: netProfit,
+      });
+    }
+
+    const totalAssets = round2(assets.reduce((s, a) => s + a.balance, 0));
+    const totalLiabilities = round2(liabilities.reduce((s, a) => s + a.balance, 0));
+    const totalEquity = round2(equity.reduce((s, a) => s + a.balance, 0));
 
     return {
       date_to: date_to || new Date().toISOString().slice(0, 10),
@@ -192,39 +231,32 @@ class Report {
         assets: totalAssets,
         liabilities: totalLiabilities,
         equity: totalEquity,
-        liabilities_plus_equity: totalLiabilities + totalEquity,
+        liabilities_plus_equity: round2(totalLiabilities + totalEquity),
         balanced: Math.abs(totalAssets - (totalLiabilities + totalEquity)) < 0.01,
       },
     };
   }
 
-  /**
-   * ═══════════════════════════════════════════
-   * Income Statement - قائمة الدخل
-   * ═══════════════════════════════════════════
-   */
+  /* ============================================================
+   * Income Statement — INNER JOIN
+   * ============================================================ */
   static async incomeStatement(companyId, { date_from, date_to }) {
     const params = [companyId];
     const conds = ['je.company_id = $1', `je.status = 'posted'`];
 
-    if (date_from) {
-      params.push(date_from);
-      conds.push(`je.entry_date >= $${params.length}`);
-    }
-    if (date_to) {
-      params.push(date_to);
-      conds.push(`je.entry_date <= $${params.length}`);
-    }
+    if (date_from) { params.push(date_from); conds.push(`je.entry_date >= $${params.length}`); }
+    if (date_to)   { params.push(date_to);   conds.push(`je.entry_date <= $${params.length}`); }
 
     const r = await pool.query(
       `SELECT a.account_type, a.code, a.name,
               COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
        FROM chart_of_accounts a
-       LEFT JOIN journal_entry_lines jel ON jel.account_id = a.id
-       LEFT JOIN journal_entries je ON je.id = jel.journal_entry_id AND ${conds.join(' AND ')}
+       INNER JOIN journal_entry_lines jel ON jel.account_id = a.id
+       INNER JOIN journal_entries je ON je.id = jel.journal_entry_id
        WHERE a.company_id = $1
          AND a.account_type IN ('revenue', 'expense')
-       GROUP BY a.id
+         AND ${conds.join(' AND ')}
+       GROUP BY a.id, a.account_type, a.code, a.name
        ORDER BY a.account_type, a.code`,
       params
     );
@@ -233,21 +265,19 @@ class Report {
     const expenses = [];
 
     for (const row of r.rows) {
-      // الإيرادات رصيدها دائن (-) → نعكس الإشارة للعرض
-      // المصروفات رصيدها مدين (+) → تبقى
       const display = row.account_type === 'revenue'
         ? -Number(row.balance)
         : Number(row.balance);
 
-      const item = { code: row.code, name: row.name, balance: display };
+      const item = { code: row.code, name: row.name, balance: round2(display) };
 
       if (row.account_type === 'revenue') revenues.push(item);
       else expenses.push(item);
     }
 
-    const totalRevenue = revenues.reduce((s, a) => s + a.balance, 0);
-    const totalExpense = expenses.reduce((s, a) => s + a.balance, 0);
-    const netProfit = totalRevenue - totalExpense;
+    const totalRevenue = round2(revenues.reduce((s, a) => s + a.balance, 0));
+    const totalExpense = round2(expenses.reduce((s, a) => s + a.balance, 0));
+    const netProfit = round2(totalRevenue - totalExpense);
 
     return {
       date_from: date_from || null,
@@ -262,40 +292,133 @@ class Report {
     };
   }
 
-  /**
-   * ═══════════════════════════════════════════
-   * General Ledger - دفتر الأستاذ (كل الحسابات)
-   * ═══════════════════════════════════════════
-   */
+  /* ============================================================
+   * General Ledger
+   * ✅ FIX #3: استعلامان بدلاً من N+1
+   * ✅ FIX #2: running_balance يبدأ من opening_balance
+   * ============================================================ */
   static async generalLedger(companyId, { date_from, date_to, account_type } = {}) {
-    const params = [companyId];
-    const conds = ['a.company_id = $1'];
+    // ─── 1) جلب كل السطور في استعلام واحد ─────────────────────────────
+    const lineParams = [companyId];
+    const lineConds = ['a.company_id = $1', `je.status = 'posted'`];
 
     if (account_type) {
-      params.push(account_type);
-      conds.push(`a.account_type = $${params.length}`);
+      lineParams.push(account_type);
+      lineConds.push(`a.account_type = $${lineParams.length}`);
+    }
+    if (date_from) {
+      lineParams.push(date_from);
+      lineConds.push(`je.entry_date >= $${lineParams.length}`);
+    }
+    if (date_to) {
+      lineParams.push(date_to);
+      lineConds.push(`je.entry_date <= $${lineParams.length}`);
     }
 
-    // جلب الحسابات
-    const accounts = await pool.query(
-      `SELECT id, code, name, account_type FROM chart_of_accounts a
-       WHERE ${conds.join(' AND ')}
-       ORDER BY code`,
-      params
+    const allLines = await pool.query(
+      `SELECT
+         a.id AS account_id,
+         a.code,
+         a.name,
+         a.account_type,
+         je.id AS journal_entry_id,
+         je.entry_number,
+         je.entry_date,
+         je.description AS entry_description,
+         jel.description AS line_description,
+         jel.debit,
+         jel.credit
+       FROM journal_entry_lines jel
+       JOIN journal_entries je ON je.id = jel.journal_entry_id
+       JOIN chart_of_accounts a ON a.id = jel.account_id
+       WHERE ${lineConds.join(' AND ')}
+       ORDER BY a.code, je.entry_date ASC, je.entry_number ASC`,
+      lineParams
     );
 
-    // جلب حركات كل حساب
+    // ─── 2) تجميع حسب الحساب ─────────────────────────────────────────
+    const byAccount = new Map();
+    for (const row of allLines.rows) {
+      if (!byAccount.has(row.account_id)) {
+        byAccount.set(row.account_id, {
+          account: {
+            id: row.account_id,
+            code: row.code,
+            name: row.name,
+            account_type: row.account_type,
+          },
+          opening_balance: 0,
+          running_balance: 0,
+          lines: [],
+        });
+      }
+      const bucket = byAccount.get(row.account_id);
+      bucket.lines.push({
+        journal_entry_id: row.journal_entry_id,
+        entry_number: row.entry_number,
+        entry_date: row.entry_date,
+        entry_description: row.entry_description,
+        line_description: row.line_description,
+        debit: Number(row.debit),
+        credit: Number(row.credit),
+      });
+    }
+
+    // ─── 3) opening_balance (استعلام واحد لكل الحسابات) ───────────────
+    if (date_from) {
+      const obParams = [companyId, date_from];
+      const obConds = [
+        'a.company_id = $1',
+        `je.status = 'posted'`,
+        `je.entry_date < $2`,
+      ];
+      if (account_type) {
+        obParams.push(account_type);
+        obConds.push(`a.account_type = $${obParams.length}`);
+      }
+
+      const opening = await pool.query(
+        `SELECT a.id AS account_id,
+                COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS bal
+         FROM chart_of_accounts a
+         JOIN journal_entry_lines jel ON jel.account_id = a.id
+         JOIN journal_entries je ON je.id = jel.journal_entry_id
+         WHERE ${obConds.join(' AND ')}
+         GROUP BY a.id`,
+        obParams
+      );
+
+      for (const row of opening.rows) {
+        if (byAccount.has(row.account_id)) {
+          byAccount.get(row.account_id).opening_balance = Number(row.bal);
+        }
+      }
+    }
+
+    // ─── 4) running_balance (بدءاً من opening_balance) ────────────────
+    for (const bucket of byAccount.values()) {
+      let balance = bucket.opening_balance;
+      for (const line of bucket.lines) {
+        balance += line.debit - line.credit;
+        line.running_balance = round2(balance);
+      }
+      bucket.running_balance = round2(balance);
+    }
+
+    // ─── 5) تحويل إلى مصفوفة (استبعاد الحسابات الفارغة) ───────────────
     const result = [];
-    for (const acc of accounts.rows) {
-      const lines = await this.accountLedger(companyId, acc.id, { date_from, date_to });
-      if (lines.lines.length === 0 && Math.abs(lines.closing_balance) < 0.01) {
-        continue; // تخطى الحسابات الفارغة
+    for (const bucket of byAccount.values()) {
+      if (
+        bucket.lines.length === 0 &&
+        Math.abs(bucket.closing_balance || bucket.running_balance) < 0.01
+      ) {
+        continue;
       }
       result.push({
-        account: acc,
-        opening_balance: lines.opening_balance,
-        closing_balance: lines.closing_balance,
-        lines: lines.lines,
+        account: bucket.account,
+        opening_balance: round2(bucket.opening_balance),
+        closing_balance: round2(bucket.running_balance),
+        lines: bucket.lines,
       });
     }
 
@@ -303,12 +426,33 @@ class Report {
   }
 
   /**
-   * كشف حساب واحد (يُستخدم من AccountController + generalLedger)
+   * كشف حساب واحد (يستخدمه `generalLedger` كـ helper أو خارجياً).
+   * ✅ FIX #2: running_balance يبدأ من opening_balance
    */
   static async accountLedger(companyId, accountId, { date_from, date_to } = {}) {
-    const params = [accountId, companyId];
-    const conds = ['jel.account_id = $1', 'je.company_id = $2', `je.status = 'posted'`];
+    // 1) opening_balance أولاً
+    let openingBalance = 0;
+    if (date_from) {
+      const ob = await pool.query(
+        `SELECT COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS bal
+         FROM journal_entry_lines jel
+         JOIN journal_entries je ON je.id = jel.journal_entry_id
+         WHERE jel.account_id = $1
+           AND je.company_id = $2
+           AND je.status = 'posted'
+           AND je.entry_date < $3`,
+        [accountId, companyId, date_from]
+      );
+      openingBalance = Number(ob.rows[0].bal);
+    }
 
+    // 2) السطور
+    const params = [accountId, companyId];
+    const conds = [
+      'jel.account_id = $1',
+      'je.company_id = $2',
+      `je.status = 'posted'`,
+    ];
     if (date_from) { params.push(date_from); conds.push(`je.entry_date >= $${params.length}`); }
     if (date_to)   { params.push(date_to);   conds.push(`je.entry_date <= $${params.length}`); }
 
@@ -323,69 +467,62 @@ class Report {
       params
     );
 
-    let runningBalance = 0;
+    // 3) running_balance بدءاً من opening_balance
+    let balance = openingBalance;
     const lines = r.rows.map((row) => {
-      runningBalance += Number(row.debit) - Number(row.credit);
-      return { ...row, running_balance: runningBalance };
+      balance += Number(row.debit) - Number(row.credit);
+      return { ...row, running_balance: round2(balance) };
     });
 
-    let openingBalance = 0;
-    if (date_from) {
-      const ob = await pool.query(
-        `SELECT COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS bal
-         FROM journal_entry_lines jel
-         JOIN journal_entries je ON je.id = jel.journal_entry_id
-         WHERE jel.account_id = $1 AND je.company_id = $2
-           AND je.status = 'posted' AND je.entry_date < $3`,
-        [accountId, companyId, date_from]
-      );
-      openingBalance = Number(ob.rows[0].bal);
-    }
-
     return {
-      opening_balance: openingBalance,
+      opening_balance: round2(openingBalance),
       lines,
-      closing_balance: openingBalance + runningBalance,
+      closing_balance: round2(balance),
     };
   }
 
-  /**
-   * ═══════════════════════════════════════════
-   * AR Aging - أعمار الذمم المدينة
-   * ═══════════════════════════════════════════
-   */
+  /* ============================================================
+   * AR Aging
+   * ✅ FIX #5: الرصيد التاريخي — يستخدم payments حتى as_of_date
+   * ============================================================ */
   static async arAging(companyId, { as_of_date } = {}) {
     const asOf = as_of_date || new Date().toISOString().slice(0, 10);
 
     const r = await pool.query(
-  `SELECT
-      c.id AS customer_id,
-      c.name AS customer_name,
-      i.id AS invoice_id,
-      i.invoice_number,
-      i.invoice_date,
-      i.due_date,
-      (COALESCE(i.total, 0) - COALESCE(i.paid_amount, 0))::numeric AS balance,
-      ($1::date - i.due_date::date) AS days_overdue
-   FROM invoices i
-   JOIN customers c ON c.id = i.customer_id
-   WHERE i.company_id = $2
-     AND i.invoice_type = 'sales'
-     AND i.status IN ('unpaid', 'partial')
-     AND i.invoice_date < ($1::date + INTERVAL '1 day')
-   ORDER BY c.name, i.due_date`,
-  [asOf, companyId]
-);
+      `SELECT
+         c.id AS customer_id,
+         c.name AS customer_name,
+         i.id AS invoice_id,
+         i.invoice_number,
+         i.invoice_date,
+         i.due_date,
+         (i.total - COALESCE((
+           SELECT SUM(p.amount) FROM payments p
+           WHERE p.invoice_id = i.id
+             AND p.payment_date <= $1::date
+         ), 0))::numeric AS balance,
+         GREATEST(0, ($1::date - i.due_date::date)) AS days_overdue
+       FROM invoices i
+       JOIN customers c ON c.id = i.customer_id
+       WHERE i.company_id = $2
+         AND i.invoice_type = 'sales'
+         AND i.status IN ('unpaid', 'partial', 'paid')
+         AND i.invoice_date < ($1::date + INTERVAL '1 day')
+       ORDER BY c.name, i.due_date`,
+      [asOf, companyId]
+    );
 
-    // تجميع حسب العميل مع buckets
     const byCustomer = {};
     for (const row of r.rows) {
+      const bal = Number(row.balance);
+      if (Math.abs(bal) < 0.01) continue;  // تخطّي الفواتير المدفوعة قبل as_of
+
       const key = row.customer_id;
       if (!byCustomer[key]) {
         byCustomer[key] = {
           customer_id: row.customer_id,
           customer_name: row.customer_name,
-          current: 0,        // لم يستحق بعد
+          current: 0,
           days_1_30: 0,
           days_31_60: 0,
           days_61_90: 0,
@@ -395,7 +532,6 @@ class Report {
         };
       }
 
-      const bal = Number(row.balance);
       const days = Number(row.days_overdue || 0);
 
       if (days <= 0) byCustomer[key].current += bal;
@@ -410,12 +546,22 @@ class Report {
         invoice_number: row.invoice_number,
         invoice_date: row.invoice_date,
         due_date: row.due_date,
-        balance: bal,
+        balance: round2(bal),
         days_overdue: days,
       });
     }
 
-    const customers = Object.values(byCustomer);
+    // ✅ round2 على كل المبالغ
+    const customers = Object.values(byCustomer).map((c) => ({
+      ...c,
+      current: round2(c.current),
+      days_1_30: round2(c.days_1_30),
+      days_31_60: round2(c.days_31_60),
+      days_61_90: round2(c.days_61_90),
+      days_over_90: round2(c.days_over_90),
+      total: round2(c.total),
+    }));
+
     const totals = customers.reduce(
       (acc, c) => {
         acc.current += c.current;
@@ -429,26 +575,38 @@ class Report {
       { current: 0, days_1_30: 0, days_31_60: 0, days_61_90: 0, days_over_90: 0, total: 0 }
     );
 
+    // round2 على totals
+    for (const k of Object.keys(totals)) totals[k] = round2(totals[k]);
+
     return { as_of_date: asOf, customers, totals };
   }
 
-  /**
-   * ═══════════════════════════════════════════
-   * AP Aging - أعمار الذمم الدائنة
-   * ═══════════════════════════════════════════
-   */
+  /* ============================================================
+   * AP Aging
+   * ✅ FIX #5: نفس منهج AR
+   * ============================================================ */
   static async apAging(companyId, { as_of_date } = {}) {
     const asOf = as_of_date || new Date().toISOString().slice(0, 10);
 
     const r = await pool.query(
-      `SELECT s.id AS supplier_id, s.name AS supplier_name,
-              i.id AS invoice_id, i.invoice_number, i.invoice_date, i.due_date,
-              (i.total - i.paid_amount)::numeric AS balance,
-              ($1::date - i.due_date) AS days_overdue
+      `SELECT
+         s.id AS supplier_id,
+         s.name AS supplier_name,
+         i.id AS invoice_id,
+         i.invoice_number,
+         i.invoice_date,
+         i.due_date,
+         (i.total - COALESCE((
+           SELECT SUM(p.amount) FROM payments p
+           WHERE p.invoice_id = i.id
+             AND p.payment_date <= $1::date
+         ), 0))::numeric AS balance,
+         GREATEST(0, ($1::date - i.due_date::date)) AS days_overdue
        FROM invoices i
        JOIN suppliers s ON s.id = i.supplier_id
-       WHERE i.company_id = $2 AND i.invoice_type = 'purchase'
-         AND i.status IN ('unpaid', 'partial')
+       WHERE i.company_id = $2
+         AND i.invoice_type = 'purchase'
+         AND i.status IN ('unpaid', 'partial', 'paid')
          AND i.invoice_date <= $1::date
        ORDER BY s.name, i.due_date`,
       [asOf, companyId]
@@ -456,17 +614,24 @@ class Report {
 
     const bySupplier = {};
     for (const row of r.rows) {
+      const bal = Number(row.balance);
+      if (Math.abs(bal) < 0.01) continue;
+
       const key = row.supplier_id;
       if (!bySupplier[key]) {
         bySupplier[key] = {
           supplier_id: row.supplier_id,
           supplier_name: row.supplier_name,
-          current: 0, days_1_30: 0, days_31_60: 0, days_61_90: 0, days_over_90: 0,
-          total: 0, invoices: [],
+          current: 0,
+          days_1_30: 0,
+          days_31_60: 0,
+          days_61_90: 0,
+          days_over_90: 0,
+          total: 0,
+          invoices: [],
         };
       }
 
-      const bal = Number(row.balance);
       const days = Number(row.days_overdue || 0);
 
       if (days <= 0) bySupplier[key].current += bal;
@@ -481,12 +646,21 @@ class Report {
         invoice_number: row.invoice_number,
         invoice_date: row.invoice_date,
         due_date: row.due_date,
-        balance: bal,
+        balance: round2(bal),
         days_overdue: days,
       });
     }
 
-    const suppliers = Object.values(bySupplier);
+    const suppliers = Object.values(bySupplier).map((s) => ({
+      ...s,
+      current: round2(s.current),
+      days_1_30: round2(s.days_1_30),
+      days_31_60: round2(s.days_31_60),
+      days_61_90: round2(s.days_61_90),
+      days_over_90: round2(s.days_over_90),
+      total: round2(s.total),
+    }));
+
     const totals = suppliers.reduce(
       (acc, s) => {
         acc.current += s.current;
@@ -500,14 +674,14 @@ class Report {
       { current: 0, days_1_30: 0, days_31_60: 0, days_61_90: 0, days_over_90: 0, total: 0 }
     );
 
+    for (const k of Object.keys(totals)) totals[k] = round2(totals[k]);
+
     return { as_of_date: asOf, suppliers, totals };
   }
 
-  /**
-   * ═══════════════════════════════════════════
-   * Sales Report
-   * ═══════════════════════════════════════════
-   */
+  /* ============================================================
+   * Sales Report — parameterized
+   * ============================================================ */
   static async salesReport(companyId, { date_from, date_to, group_by = 'day' }) {
     const params = [companyId];
     const conds = [
@@ -520,7 +694,6 @@ class Report {
     if (date_to)   { params.push(date_to);   conds.push(`i.invoice_date <= $${params.length}`); }
 
     let groupExpr;
-    let dateFormat;
     switch (group_by) {
       case 'month': groupExpr = `DATE_TRUNC('month', i.invoice_date)`; break;
       case 'year':  groupExpr = `DATE_TRUNC('year', i.invoice_date)`; break;
@@ -551,6 +724,14 @@ class Report {
       params
     );
 
+    const prodParams = [companyId];
+    const prodConds = [
+      `so.company_id = $1`,
+      `so.status IN ('confirmed', 'invoiced')`,
+    ];
+    if (date_from) { prodParams.push(date_from); prodConds.push(`so.order_date >= $${prodParams.length}`); }
+    if (date_to)   { prodParams.push(date_to);   prodConds.push(`so.order_date <= $${prodParams.length}`); }
+
     const byProduct = await pool.query(
       `SELECT p.id, p.name, p.sku,
               SUM(soi.quantity)::numeric AS quantity_sold,
@@ -558,13 +739,11 @@ class Report {
        FROM sales_order_items soi
        JOIN sales_orders so ON so.id = soi.order_id
        JOIN products p ON p.id = soi.product_id
-       WHERE so.company_id = $1 AND so.status IN ('confirmed', 'invoiced')
-         ${date_from ? `AND so.order_date >= '${date_from}'` : ''}
-         ${date_to ? `AND so.order_date <= '${date_to}'` : ''}
+       WHERE ${prodConds.join(' AND ')}
        GROUP BY p.id, p.name, p.sku
        ORDER BY revenue DESC
        LIMIT 20`,
-      [companyId]
+      prodParams
     );
 
     const totals = byDate.rows.reduce(
@@ -577,6 +756,9 @@ class Report {
       { invoices_count: 0, total_sales: 0, total_paid: 0 }
     );
 
+    totals.total_sales = round2(totals.total_sales);
+    totals.total_paid = round2(totals.total_paid);
+
     return {
       period: { date_from, date_to, group_by },
       totals,
@@ -586,11 +768,9 @@ class Report {
     };
   }
 
-  /**
-   * ═══════════════════════════════════════════
+  /* ============================================================
    * Purchases Report
-   * ═══════════════════════════════════════════
-   */
+   * ============================================================ */
   static async purchasesReport(companyId, { date_from, date_to, group_by = 'day' }) {
     const params = [companyId];
     const conds = [`i.company_id = $1`, `i.invoice_type = 'purchase'`, `i.status <> 'cancelled'`];
@@ -636,6 +816,9 @@ class Report {
       { invoices_count: 0, total_purchases: 0, total_paid: 0 }
     );
 
+    totals.total_purchases = round2(totals.total_purchases);
+    totals.total_paid = round2(totals.total_paid);
+
     return {
       period: { date_from, date_to, group_by },
       totals,
@@ -644,11 +827,9 @@ class Report {
     };
   }
 
-  /**
-   * ═══════════════════════════════════════════
+  /* ============================================================
    * Inventory Report
-   * ═══════════════════════════════════════════
-   */
+   * ============================================================ */
   static async inventoryReport(companyId, { warehouse_id } = {}) {
     const params = [companyId];
     let whCond = '';
@@ -661,7 +842,7 @@ class Report {
       `SELECT p.id, p.sku, p.name, p.unit, p.min_stock_level,
               w.id AS warehouse_id, w.name AS warehouse_name,
               COALESCE(SUM(b.quantity), 0)::numeric AS total_quantity,
-              COALESCE(SUM(b.quantity * b.cost_price), 0)::numeric AS total_value,
+              COALESCE(SUM(b.quantity * COALESCE(b.cost_price_base, b.cost_price)), 0)::numeric AS total_value,
               COUNT(DISTINCT b.id)::int AS batches_count,
               MIN(b.expiry_date) AS nearest_expiry
        FROM products p
@@ -673,16 +854,14 @@ class Report {
       params
     );
 
-    // ملخص
     const summary = await pool.query(
       `SELECT COUNT(*)::int AS products_count,
-              COALESCE(SUM(quantity * cost_price), 0)::numeric AS total_value,
+              COALESCE(SUM(quantity * COALESCE(cost_price_base, cost_price)), 0)::numeric AS total_value,
               COALESCE(SUM(quantity), 0)::numeric AS total_units
        FROM product_batches WHERE company_id = $1 AND quantity > 0`,
       [companyId]
     );
 
-    // قرب الانتهاء
     const expiring = await pool.query(
       `SELECT b.id, b.batch_number, b.expiry_date, b.quantity, b.cost_price,
               p.name AS product_name, p.sku,
@@ -697,7 +876,6 @@ class Report {
       [companyId]
     );
 
-    // تحت الحد الأدنى
     const lowStock = await pool.query(
       `SELECT p.id, p.sku, p.name, p.min_stock_level,
               COALESCE(SUM(b.quantity), 0)::numeric AS current_quantity
@@ -718,11 +896,9 @@ class Report {
     };
   }
 
-  /**
-   * ═══════════════════════════════════════════
+  /* ============================================================
    * Top Products
-   * ═══════════════════════════════════════════
-   */
+   * ============================================================ */
   static async topProducts(companyId, { date_from, date_to, limit = 10 } = {}) {
     const params = [companyId];
     const conds = [`so.company_id = $1`, `so.status IN ('confirmed', 'invoiced')`];
@@ -741,7 +917,7 @@ class Report {
        JOIN sales_orders so ON so.id = soi.order_id
        JOIN products p ON p.id = soi.product_id
        WHERE ${conds.join(' AND ')}
-       GROUP BY p.id
+       GROUP BY p.id, p.sku, p.name
        ORDER BY revenue DESC
        LIMIT $${params.length}`,
       params
@@ -750,130 +926,121 @@ class Report {
     return r.rows;
   }
 
-  /**
-   * ═══════════════════════════════════════════
-   * Tax Summary
-   * ═══════════════════════════════════════════
-   */
+  /* ============================================================
+   * Tax Summary — parameterized
+   * ============================================================ */
   static async taxSummary(companyId, { date_from, date_to }) {
+    // ضريبة المخرجات (من invoice_items + invoices)
+    const outParams = [companyId];
+    const outConds = [
+      `i.company_id = $1`,
+      `i.invoice_type = 'sales'`,
+      `i.status <> 'cancelled'`,
+    ];
+    if (date_from) { outParams.push(date_from); outConds.push(`i.invoice_date >= $${outParams.length}`); }
+    if (date_to)   { outParams.push(date_to);   outConds.push(`i.invoice_date <= $${outParams.length}`); }
+
+    const output = await pool.query(
+      `SELECT COALESCE(SUM(ii.tax_amount), 0)::numeric AS total
+       FROM invoice_items ii
+       JOIN invoices i ON i.id = ii.invoice_id
+       WHERE ${outConds.join(' AND ')}`,
+      outParams
+    );
+
+    // ضريبة المدخلات
+    const inParams = [companyId];
+    const inConds = [
+      `i.company_id = $1`,
+      `i.invoice_type = 'purchase'`,
+      `i.status <> 'cancelled'`,
+    ];
+    if (date_from) { inParams.push(date_from); inConds.push(`i.invoice_date >= $${inParams.length}`); }
+    if (date_to)   { inParams.push(date_to);   inConds.push(`i.invoice_date <= $${inParams.length}`); }
+
+    const input = await pool.query(
+      `SELECT COALESCE(SUM(ii.tax_amount), 0)::numeric AS total
+       FROM invoice_items ii
+       JOIN invoices i ON i.id = ii.invoice_id
+       WHERE ${inConds.join(' AND ')}`,
+      inParams
+    );
+
+    const outputTotal = round2(Number(output.rows[0].total));
+    const inputTotal = round2(Number(input.rows[0].total));
+
+    return {
+      period: { date_from, date_to },
+      output_tax: outputTotal,
+      input_tax: inputTotal,
+      net_payable: round2(outputTotal - inputTotal),
+    };
+  }
+
+  /* ============================================================
+   * Trial Balance — INNER JOIN
+   * ============================================================ */
+  static async trialBalance(companyId, { date_from, date_to } = {}) {
     const params = [companyId];
     const conds = ['je.company_id = $1', `je.status = 'posted'`];
 
     if (date_from) { params.push(date_from); conds.push(`je.entry_date >= $${params.length}`); }
     if (date_to)   { params.push(date_to);   conds.push(`je.entry_date <= $${params.length}`); }
 
-    // ضريبة المخرجات (من فواتير البيع)
-    const output = await pool.query(
-      `SELECT COALESCE(SUM(soi.tax_amount), 0)::numeric AS total
-       FROM sales_order_items soi
-       JOIN sales_orders so ON so.id = soi.order_id
-       WHERE so.company_id = $1 AND so.status IN ('confirmed', 'invoiced')
-         ${date_from ? `AND so.order_date >= '${date_from}'` : ''}
-         ${date_to ? `AND so.order_date <= '${date_to}'` : ''}`,
-      [companyId]
+    const r = await pool.query(
+      `SELECT a.id, a.code, a.name, a.account_type,
+              COALESCE(SUM(jel.debit), 0)::numeric AS total_debit,
+              COALESCE(SUM(jel.credit), 0)::numeric AS total_credit,
+              COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
+       FROM chart_of_accounts a
+       INNER JOIN journal_entry_lines jel ON jel.account_id = a.id
+       INNER JOIN journal_entries je ON je.id = jel.journal_entry_id
+       WHERE ${conds.join(' AND ')} AND a.company_id = $1
+       GROUP BY a.id, a.code, a.name, a.account_type
+       HAVING COALESCE(SUM(jel.debit), 0) <> 0 OR COALESCE(SUM(jel.credit), 0) <> 0
+       ORDER BY a.code`,
+      params
     );
 
-    // ضريبة المدخلات (من فواتير الشراء)
-    const input = await pool.query(
-      `SELECT COALESCE(SUM(poi.tax_amount), 0)::numeric AS total
-       FROM purchase_order_items poi
-       JOIN purchase_orders po ON po.id = poi.order_id
-       WHERE po.company_id = $1 AND po.status IN ('confirmed', 'invoiced')
-         ${date_from ? `AND po.order_date >= '${date_from}'` : ''}
-         ${date_to ? `AND po.order_date <= '${date_to}'` : ''}`,
-      [companyId]
-    );
+    const accounts = r.rows.map((row) => ({
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      account_type: row.account_type,
+      total_debit: round2(Number(row.total_debit)),
+      total_credit: round2(Number(row.total_credit)),
+      balance: ['asset', 'expense'].includes(row.account_type)
+        ? round2(Number(row.total_debit) - Number(row.total_credit))
+        : round2(Number(row.total_credit) - Number(row.total_debit)),
+      balance_side:
+        Math.abs(Number(row.total_debit) - Number(row.total_credit)) < 0.005
+          ? 'zero'
+          : Number(row.total_debit) > Number(row.total_credit)
+            ? 'debit'
+            : 'credit',
+      raw_balance: round2(Number(row.balance)),
+    }));
 
-    const outputTotal = Number(output.rows[0].total);
-    const inputTotal = Number(input.rows[0].total);
+    const totals = accounts.reduce(
+      (acc, a) => ({
+        debit: acc.debit + a.total_debit,
+        credit: acc.credit + a.total_credit,
+      }),
+      { debit: 0, credit: 0 }
+    );
 
     return {
-      period: { date_from, date_to },
-      output_tax: outputTotal,
-      input_tax: inputTotal,
-      net_payable: outputTotal - inputTotal,
+      date_from: date_from || null,
+      date_to: date_to || new Date().toISOString().slice(0, 10),
+      accounts,
+      totals: {
+        debit: round2(totals.debit),
+        credit: round2(totals.credit),
+        balanced: Math.abs(totals.debit - totals.credit) < 0.01,
+        difference: round2(totals.debit - totals.credit),
+      },
     };
   }
-  /**
- * ميزان المراجعة — لكل حساب: مدين، دائن، رصيد.
- * يشمل الحسابات التي لها حركات فقط.
- */
-static async trialBalance(companyId, { date_from, date_to } = {}) {
-  const params = [companyId];
-  const conds = ['je.company_id = $1', `je.status = 'posted'`];
-
-  if (date_from) {
-    params.push(date_from);
-    conds.push(`je.entry_date >= $${params.length}`);
-  }
-  if (date_to) {
-    params.push(date_to);
-    conds.push(`je.entry_date <= $${params.length}`);
-  }
-
-  const r = await pool.query(
-    `SELECT
-       a.id,
-       a.code,
-       a.name,
-       a.account_type,
-       COALESCE(SUM(jel.debit), 0)::numeric AS total_debit,
-       COALESCE(SUM(jel.credit), 0)::numeric AS total_credit,
-       COALESCE(SUM(jel.debit - jel.credit), 0)::numeric AS balance
-     FROM chart_of_accounts a
-     INNER JOIN journal_entry_lines jel ON jel.account_id = a.id
-     INNER JOIN journal_entries je ON je.id = jel.journal_entry_id
-     WHERE ${conds.join(' AND ')} AND a.company_id = $1
-     GROUP BY a.id, a.code, a.name, a.account_type
-     HAVING COALESCE(SUM(jel.debit), 0) <> 0 OR COALESCE(SUM(jel.credit), 0) <> 0
-     ORDER BY a.code`,
-    params
-  );
-
-  // تصنيف حسب نوع الحساب
-  const accounts = r.rows.map((row) => ({
-    id: row.id,
-    code: row.code,
-    name: row.name,
-    account_type: row.account_type,
-    total_debit: Number(row.total_debit),
-    total_credit: Number(row.total_credit),
-    // الرصيد بصيغة موحدة:
-    // - asset / expense → debit - credit (موجب = مدين)
-    // - liability / equity / revenue → credit - debit (موجب = دائن)
-    balance:
-      ['asset', 'expense'].includes(row.account_type)
-        ? Number(row.total_debit) - Number(row.total_credit)
-        : Number(row.total_credit) - Number(row.total_debit),
-    balance_side:
-      Math.abs(Number(row.total_debit) - Number(row.total_credit)) < 0.005
-        ? 'zero'
-        : Number(row.total_debit) > Number(row.total_credit)
-          ? 'debit'
-          : 'credit',
-    raw_balance: Number(row.balance),
-  }));
-
-  const totals = accounts.reduce(
-    (acc, a) => ({
-      debit: acc.debit + a.total_debit,
-      credit: acc.credit + a.total_credit,
-    }),
-    { debit: 0, credit: 0 }
-  );
-
-  return {
-    date_from: date_from || null,
-    date_to: date_to || new Date().toISOString().slice(0, 10),
-    accounts,
-    totals: {
-      debit: round2(totals.debit),
-      credit: round2(totals.credit),
-      balanced: Math.abs(totals.debit - totals.credit) < 0.01,
-      difference: round2(totals.debit - totals.credit),
-    },
-  };
-}
 }
 
 module.exports = Report;
