@@ -1,6 +1,6 @@
 // routes/goodsReceiptRoutes.js
 const router = require('express').Router();
-const ctrl = require('../controllers/GoodsReceiptController');
+const ctrl = require('../controllers/goodsReceiptController');
 const {
   authenticate,
   requireCompany,
