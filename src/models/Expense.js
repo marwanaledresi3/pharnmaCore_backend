@@ -12,7 +12,7 @@ class Expense {
    * قائمة المصروفات مع الفلاتر والترقيم.
    *
    * الفلاتر:
-   * - status, category, supplier_id, date_from, date_to
+   * - status, category, supplier_id, cash_register_id, date_from, date_to
    * - search (expense_number, description, supplier_name, external_reference)
    * - page, limit
    */
@@ -20,6 +20,7 @@ class Expense {
     status,
     category,
     supplier_id,
+    cash_register_id,
     date_from,
     date_to,
     search,
@@ -41,6 +42,10 @@ class Expense {
     if (supplier_id) {
       params.push(supplier_id);
       conds.push(`e.supplier_id = $${params.length}`);
+    }
+    if (cash_register_id) {
+      params.push(cash_register_id);
+      conds.push(`e.cash_register_id = $${params.length}`);
     }
     if (date_from) {
       params.push(date_from);
@@ -75,6 +80,7 @@ class Expense {
          e.exchange_rate,
          e.payment_type,
          e.payment_method,
+         e.cash_register_id,
          e.paid_amount,
          e.due_date,
          e.status,
@@ -93,6 +99,10 @@ class Expense {
          s.name AS supplier_name,
          s.code AS supplier_code,
 
+         -- الصندوق النقدي
+         cr.name AS cash_register_name,
+         cr.code AS cash_register_code,
+
          -- الحساب
          a.code AS account_code,
          a.name AS account_name,
@@ -107,6 +117,7 @@ class Expense {
        JOIN currencies cu ON cu.id = e.currency_id
        JOIN chart_of_accounts a ON a.id = e.expense_account_id
        LEFT JOIN suppliers s ON s.id = e.supplier_id
+       LEFT JOIN cash_registers cr ON cr.id = e.cash_register_id
        LEFT JOIN users u ON u.id = e.created_by
        WHERE ${conds.join(' AND ')}
        ORDER BY e.expense_date DESC, e.created_at DESC
@@ -143,6 +154,8 @@ class Expense {
          cu.symbol AS currency_symbol,
          s.name    AS supplier_name,
          s.code    AS supplier_code,
+         cr.name   AS cash_register_name,
+         cr.code   AS cash_register_code,
          a.code    AS account_code,
          a.name    AS account_name,
          u.name    AS created_by_name,
@@ -151,6 +164,7 @@ class Expense {
        JOIN currencies cu ON cu.id = e.currency_id
        JOIN chart_of_accounts a ON a.id = e.expense_account_id
        LEFT JOIN suppliers s ON s.id = e.supplier_id
+       LEFT JOIN cash_registers cr ON cr.id = e.cash_register_id
        LEFT JOIN users u ON u.id = e.created_by
        WHERE e.id = $1 AND e.company_id = $2`,
       [id, companyId]
@@ -167,10 +181,10 @@ class Expense {
          (company_id, expense_number, expense_date, expense_category,
           expense_account_id, supplier_id, description, amount,
           currency_id, exchange_rate, payment_type, payment_method,
-          paid_amount, due_date, status, journal_entry_id,
+          cash_register_id, paid_amount, due_date, status, journal_entry_id,
           external_reference, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-       RETURNING id, expense_number, status, amount, paid_amount`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+       RETURNING id, expense_number, status, amount, paid_amount, cash_register_id`,
       [
         companyId,
         data.expense_number,
@@ -184,6 +198,7 @@ class Expense {
         data.exchange_rate || 1,
         data.payment_type,
         data.payment_method || null,
+        data.cash_register_id || null,
         data.paid_amount || 0,
         data.due_date || null,
         data.status || 'posted',

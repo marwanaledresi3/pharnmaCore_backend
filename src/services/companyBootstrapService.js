@@ -1,9 +1,12 @@
-const {pool} = require('../config/pool');
+// services/companyBootstrapService.js
+const { pool } = require('../config/pool');
 const Account = require('../models/Account');
 const Role = require('../models/Role');
+const CashRegister = require('../models/CashRegister');
 const defaultAccounts = require('../data/defaultChartOfAccounts');
 const defaultRoles = require('../data/defaultRoles');
 const settingsService = require('./settingsService');
+
 /**
  * ينشئ كل الأساسيات لشركة جديدة داخل transaction موجودة
  * @param {Object} client - عميل PostgreSQL (من نفس الـ transaction)
@@ -14,25 +17,27 @@ const bootstrap = async (client, companyId, options = {}) => {
   // 1) شجرة الحسابات
   const accountIds = await createDefaultChartOfAccounts(client, companyId);
 
-  // 2) الضريبة الافتراضية (VAT 15%)
+  // 2) الصندوق النقدي الافتراضي (مرتبط بحساب فرعي تحت 1111)
+  const defaultCashRegister = await createDefaultCashRegister(client, companyId, options);
+
+  // 3) الضريبة الافتراضية (VAT 15%)
   await createDefaultTaxRate(client, companyId);
 
-  // 3) المستودع الرئيسي
+  // 4) المستودع الرئيسي
   await createDefaultWarehouse(client, companyId);
 
-  // 4) الأدوار الافتراضية
+  // 5) الأدوار الافتراضية
   const roles = await createDefaultRoles(client, companyId);
 
-  // 5) إعدادات الشركة
+  // 6) إعدادات الشركة
   await createDefaultSettings(client, companyId, options);
 
-  return { accountIds, roles };
+  return { accountIds, defaultCashRegister, roles };
 };
 
 /**
  * إنشاء شجرة الحسابات بالترتيب الهرمي (الأب قبل الابن)
  */
-
 const createDefaultChartOfAccounts = async (client, companyId) => {
   const codeToId = {};
 
@@ -74,6 +79,31 @@ const createDefaultChartOfAccounts = async (client, companyId) => {
 
   return codeToId;
 };
+
+/**
+ * الصندوق النقدي الافتراضي للشركة
+ */
+const createDefaultCashRegister = async (client, companyId, options = {}) => {
+  const existing = await client.query(
+    `SELECT id, name, code, account_id FROM cash_registers
+     WHERE company_id = $1 AND is_default = TRUE
+     LIMIT 1`,
+    [companyId]
+  );
+  if (existing.rowCount) {
+    return existing.rows[0];
+  }
+
+  return await CashRegister.create(client, companyId, {
+    name: 'الصندوق الرئيسي',
+    code: 'CASH-01',
+    currency_id: options.defaultCurrencyId || null,
+    responsible_user_id: options.createdBy || null,
+    is_default: true,
+    notes: 'الصندوق النقدي الافتراضي للشركة',
+  });
+};
+
 /**
  * ضريبة القيمة المضافة الافتراضية 15%
  */
@@ -141,4 +171,5 @@ const createDefaultSettings = async (client, companyId, options = {}) => {
     default_currency: options.defaultCurrencyId || null,
   });
 };
+
 module.exports = { bootstrap };

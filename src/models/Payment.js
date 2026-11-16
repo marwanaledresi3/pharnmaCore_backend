@@ -10,7 +10,7 @@ const VALID_METHODS = ['cash', 'bank', 'cheque', 'card', 'wallet', 'other'];
 class Payment {
   // ═══════════════════════════════════════════════════════════════
   // CREATE
-  // ✅ يتحقق من amount, payment_type, method, currency, invoice
+  // ✅ يتحقق من amount, payment_type, method, currency, invoice, cash_register_id
   // ✅ يتحقق من تطابق payment_type مع customer_id/supplier_id
   // ═══════════════════════════════════════════════════════════════
   static async create(client, companyId, data) {
@@ -18,6 +18,7 @@ class Payment {
       invoice_id,
       supplier_id,
       customer_id,
+      cash_register_id,
       payment_type,
       amount,
       currency_id,
@@ -72,7 +73,21 @@ class Payment {
       }
     }
 
-    // ═══ 6) تحقق من تطابق payment_type مع party ═══
+    // ═══ 6) تحقق من cash_register_id (إن وُجد) ═══
+    if (cash_register_id) {
+      const regCheck = await client.query(
+        `SELECT id, is_active FROM cash_registers WHERE id = $1 AND company_id = $2`,
+        [cash_register_id, companyId]
+      );
+      if (!regCheck.rowCount) {
+        throw new ApiError(400, `Cash register ${cash_register_id} not found in this company`);
+      }
+      if (!regCheck.rows[0].is_active) {
+        throw new ApiError(400, 'Selected cash register is inactive');
+      }
+    }
+
+    // ═══ 7) تحقق من تطابق payment_type مع party ═══
     if (payment_type === 'receive' && !customer_id) {
       throw new ApiError(400, 'receive requires customer_id');
     }
@@ -86,17 +101,17 @@ class Payment {
       throw new ApiError(400, 'refund requires customer_id or supplier_id');
     }
 
-    // ═══ 7) إدراج ═══
+    // ═══ 8) إدراج ═══
     const r = await client.query(
       `INSERT INTO payments (
-        company_id, invoice_id, supplier_id, customer_id,
+        company_id, invoice_id, supplier_id, customer_id, cash_register_id,
         payment_type, amount, currency_id, payment_date,
         method, reference, voucher_number, external_reference,
         description, notes, journal_entry_id, created_by,
         refund_of_payment_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-      RETURNING id, company_id, invoice_id, payment_type, amount,
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+      RETURNING id, company_id, invoice_id, cash_register_id, payment_type, amount,
                 currency_id, payment_date, method, voucher_number,
                 journal_entry_id, created_at`,
       [
@@ -104,6 +119,7 @@ class Payment {
         invoice_id || null,
         supplier_id || null,
         customer_id || null,
+        cash_register_id || null,
         payment_type,
         amountNum,
         currency_id,
@@ -125,7 +141,7 @@ class Payment {
 
   // ═══════════════════════════════════════════════════════════════
   // FIND BY ID
-  // ✅ يدعم client
+  // ✅ يدعم client + يجلب بيانات الصندوق
   // ═══════════════════════════════════════════════════════════════
   static async findById(client, companyId, id) {
     const executor = client || pool;
@@ -135,12 +151,15 @@ class Payment {
          c.name AS customer_name,
          s.name AS supplier_name,
          i.invoice_number,
+         cr.name AS cash_register_name,
+         cr.code AS cash_register_code,
          u.name AS created_by_name,
          p2.voucher_number AS refunded_payment_voucher
        FROM payments p
        LEFT JOIN customers c ON c.id = p.customer_id
        LEFT JOIN suppliers s ON s.id = p.supplier_id
        LEFT JOIN invoices i ON i.id = p.invoice_id
+       LEFT JOIN cash_registers cr ON cr.id = p.cash_register_id
        LEFT JOIN users u ON u.id = p.created_by
        LEFT JOIN payments p2 ON p2.id = p.refund_of_payment_id
        WHERE p.id = $1 AND p.company_id = $2`,
@@ -229,7 +248,7 @@ class Payment {
     const r = await client.query(
       `DELETE FROM payments
        WHERE id = $1 AND company_id = $2
-       RETURNING id, invoice_id, voucher_number, amount, payment_type`,
+       RETURNING id, invoice_id, cash_register_id, voucher_number, amount, payment_type`,
       [id, companyId]
     );
 
@@ -238,6 +257,7 @@ class Payment {
     return {
       id: r.rows[0].id,
       invoice_id: r.rows[0].invoice_id,
+      cash_register_id: r.rows[0].cash_register_id,
       voucher_number: r.rows[0].voucher_number,
       amount: Number(r.rows[0].amount),
       payment_type: r.rows[0].payment_type,
@@ -246,12 +266,14 @@ class Payment {
 
   // ═══════════════════════════════════════════════════════════════
   // LIST
+  // ✅ يدعم الفلترة بـ cash_register_id وإرجاع اسمه
   // ═══════════════════════════════════════════════════════════════
   static async list(companyId, filters = {}) {
     const {
       invoice_id,
       customer_id,
       supplier_id,
+      cash_register_id,
       payment_type,
       method,
       date_from,
@@ -279,6 +301,10 @@ class Payment {
     if (supplier_id) {
       params.push(supplier_id);
       conds.push(`p.supplier_id = $${params.length}`);
+    }
+    if (cash_register_id) {
+      params.push(cash_register_id);
+      conds.push(`p.cash_register_id = $${params.length}`);
     }
     if (payment_type) {
       if (!VALID_PAYMENT_TYPES.includes(payment_type)) {
@@ -326,12 +352,14 @@ class Payment {
          p.invoice_id, i.invoice_number,
          p.customer_id, c.name AS customer_name,
          p.supplier_id, s.name AS supplier_name,
+         p.cash_register_id, cr.name AS cash_register_name, cr.code AS cash_register_code,
          p.journal_entry_id,
          u.name AS created_by_name
        FROM payments p
        LEFT JOIN invoices i ON i.id = p.invoice_id
        LEFT JOIN customers c ON c.id = p.customer_id
        LEFT JOIN suppliers s ON s.id = p.supplier_id
+       LEFT JOIN cash_registers cr ON cr.id = p.cash_register_id
        LEFT JOIN users u ON u.id = p.created_by
        WHERE ${where}
        ORDER BY p.payment_date DESC, p.created_at DESC

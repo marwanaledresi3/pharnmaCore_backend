@@ -10,6 +10,7 @@ class PurchaseOrder {
    * - status: draft | pending_approval | approved | rejected | confirmed | cancelled
    * - supplier_id: uuid
    * - supplier_company_id: uuid (للطلبات الشبكية)
+   * - cash_register_id: uuid
    * - date_from, date_to: YYYY-MM-DD
    * - payment_type: cash | credit | partial
    * - payment_method: cash | bank | cheque | card | wallet | other
@@ -21,6 +22,7 @@ class PurchaseOrder {
     status,
     supplier_id,
     supplier_company_id,
+    cash_register_id,
     date_from,
     date_to,
     payment_type,
@@ -44,6 +46,10 @@ class PurchaseOrder {
     if (supplier_company_id) {
       params.push(supplier_company_id);
       conds.push(`po.supplier_company_id = $${params.length}`);
+    }
+    if (cash_register_id) {
+      params.push(cash_register_id);
+      conds.push(`po.cash_register_id = $${params.length}`);
     }
     if (date_from) {
       params.push(date_from);
@@ -71,12 +77,12 @@ class PurchaseOrder {
         OR sc.name ILIKE $${p}
       )`);
     }
-    if (is_overdue === true) {
+    if (is_overdue === true || is_overdue === 'true') {
       conds.push(`po.due_date IS NOT NULL
                   AND po.due_date < CURRENT_DATE
                   AND po.paid_amount < po.total - 0.01
                   AND po.status IN ('approved', 'confirmed')`);
-    } else if (is_overdue === false) {
+    } else if (is_overdue === false || is_overdue === 'false') {
       conds.push(`(po.due_date IS NULL
                   OR po.due_date >= CURRENT_DATE
                   OR po.paid_amount >= po.total - 0.01
@@ -112,6 +118,10 @@ class PurchaseOrder {
          po.supplier_company_id,
          sc.name AS supplier_company_name,
 
+         -- الصندوق النقدي
+         po.cash_register_id,
+         cr.name AS cash_register_name,
+
          -- الدفع
          po.payment_type,
          po.payment_method,
@@ -139,7 +149,7 @@ class PurchaseOrder {
          po.created_at,
          po.updated_at,
 
-         -- مؤشر التأخر (اختياري — للواجهة)
+         -- مؤشر التأخر
          CASE
            WHEN po.due_date IS NOT NULL
              AND po.due_date < CURRENT_DATE
@@ -153,6 +163,7 @@ class PurchaseOrder {
        JOIN suppliers s ON s.id = po.supplier_id
        LEFT JOIN companies sc ON sc.id = po.supplier_company_id
        LEFT JOIN currencies cu ON cu.id = po.currency_id
+       LEFT JOIN cash_registers cr ON cr.id = po.cash_register_id
        LEFT JOIN users u ON u.id = po.created_by
        WHERE ${conds.join(' AND ')}
        ORDER BY po.order_date DESC, po.created_at DESC
@@ -182,8 +193,6 @@ class PurchaseOrder {
 
   /**
    * جلب أمر شراء للمشتري أو للمورد (حسب سياق الشركة).
-   * - إذا كانت companyId = buyer → تُرجع الطلب.
-   * - إذا كانت companyId = supplier (شبكي) → تُرجع الطلب أيضاً عبر supplier_company_id.
    */
   static async findById(companyId, id) {
     const head = await pool.query(
@@ -192,6 +201,8 @@ class PurchaseOrder {
               sc.name AS supplier_company_name,
               cu.code AS currency_code,
               cu.symbol AS currency_symbol,
+              cr.name AS cash_register_name,
+              cr.code AS cash_register_code,
               u.name AS created_by_name,
               bc.name AS buyer_company_name
        FROM purchase_orders po
@@ -199,6 +210,7 @@ class PurchaseOrder {
        JOIN currencies cu ON cu.id = po.currency_id
        LEFT JOIN companies sc ON sc.id = po.supplier_company_id
        LEFT JOIN companies bc ON bc.id = po.company_id
+       LEFT JOIN cash_registers cr ON cr.id = po.cash_register_id
        LEFT JOIN users u ON u.id = po.created_by
        WHERE po.id = $1
          AND (po.company_id = $2 OR po.supplier_company_id = $2)`,
@@ -222,7 +234,6 @@ class PurchaseOrder {
 
   /**
    * توليد رقم أمر شراء آمن تحت التزامن.
-   * - نستخدم عمود counter في جدول company_sequences.
    */
   static async nextNumber(client, companyId) {
     await client.query(
@@ -246,7 +257,6 @@ class PurchaseOrder {
 
   /**
    * الطلبات الواردة من الشركات الأخرى (للمورد).
-   * - تدعم pagination + فلترة status.
    */
   static async getIncoming(companyId, {
     status = 'pending_approval',

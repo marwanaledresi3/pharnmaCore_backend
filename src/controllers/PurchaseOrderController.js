@@ -14,8 +14,17 @@ const getOne = asyncHandler(async (req, res) => {
 });
 
 const create = asyncHandler(async (req, res) => {
-  const order = await service.create(req.user.company_id, req.user.id, req.body);
-  res.status(201).json({ success: true, data: order });
+  const body = {
+    ...req.body,
+    user_branch_id: req.user.branch_id || null,
+  };
+
+  const result = await service.create(
+    req.user.company_id,
+    req.user.id,
+    body
+  );
+  res.status(201).json({ success: true, data: result });
 });
 
 const confirm = asyncHandler(async (req, res) => {

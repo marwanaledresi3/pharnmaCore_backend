@@ -338,6 +338,21 @@ const PERMISSIONS = [
   { code: 'posts.view',   name: 'عرض المنشورات', module: 'b2b' },
   { code: 'posts.create', name: 'نشر منشور',    module: 'b2b' },
   { code: 'posts.delete', name: 'حذف منشور',    module: 'b2b' },
+
+  // ═══════════════════════════════════════════════════════════
+  // 37) Cash Registers (الصناديق النقدية) 🆕
+  // ═══════════════════════════════════════════════════════════
+  { code: 'cash_registers.view',   name: 'عرض الصناديق النقدية',   module: 'cash_registers' },
+  { code: 'cash_registers.create', name: 'إنشاء صندوق نقدي',       module: 'cash_registers' },
+  { code: 'cash_registers.update', name: 'تعديل صندوق نقدي',       module: 'cash_registers' },
+  { code: 'cash_registers.delete', name: 'حذف صندوق نقدي',         module: 'cash_registers' },
+
+  // ═══════════════════════════════════════════════════════════
+  // 38) Cash Transfers (التحويلات النقدية) 🆕
+  // ═══════════════════════════════════════════════════════════
+  { code: 'cash_transfers.view',   name: 'عرض التحويلات النقدية',  module: 'cash_transfers' },
+  { code: 'cash_transfers.create', name: 'إنشاء تحويل نقدي',       module: 'cash_transfers' },
+  { code: 'cash_transfers.cancel', name: 'إلغاء تحويل نقدي',       module: 'cash_transfers' },
 ];
 
 // ═══════════════════════════════════════════════════════════════

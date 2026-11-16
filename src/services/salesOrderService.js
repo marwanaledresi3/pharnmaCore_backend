@@ -2,23 +2,20 @@
 const { pool } = require('../config/pool');
 const ApiError = require('../errors/ApiError');
 const JournalEntry = require('../models/JournalEntry');
+const CashRegister = require('../models/CashRegister');
+const Payment = require('../models/Payment');
 const NumberingService = require('./numberingService');
 const currencyUtil = require('../utils/currency');
 const { resolveBaseQuantity } = require('./helpers/units');
 const { assertMinSellingPrice } = require('./helpers/pricing');
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
-
-// ⚠️ ثابت موحّد — يطابق reservationService.consumeForOrder
 const STOCK_REF_SALES = 'sales';
 
 /* ============================================================
  * إنشاء طلب بيع (draft)
  * ============================================================ */
-// services/salesOrderService.js — create (محدّث)
-
 const create = async (companyId, userId, payload) => {
-  // 1) سعر الصرف
   let exchangeRate = Number(payload.exchange_rate || 0);
   if (!Number.isFinite(exchangeRate) || exchangeRate <= 0) {
     const ex = await currencyUtil.toBase(
@@ -30,13 +27,15 @@ const create = async (companyId, userId, payload) => {
     throw new ApiError(400, 'Exchange rate must be > 0');
   }
 
-  // ✅ 1.5) التحقق من نوع الدفع
   const paymentType = payload.payment_type || 'cash';
   if (!['cash', 'credit', 'partial'].includes(paymentType)) {
     throw new ApiError(400, 'payment_type must be cash, credit, or partial');
   }
 
-  const paymentMethod = payload.payment_method || null;
+  // عند الدفع النقدي أو الجزئي، الافتراضي لـ payment_method هو 'cash' ما لم يُحدد غيره
+  const paymentMethod =
+    payload.payment_method || (paymentType !== 'credit' ? 'cash' : null);
+
   if (paymentMethod && !['cash', 'bank', 'cheque'].includes(paymentMethod)) {
     throw new ApiError(400, 'payment_method must be cash, bank, or cheque');
   }
@@ -46,7 +45,6 @@ const create = async (companyId, userId, payload) => {
     throw new ApiError(400, 'payment_terms_days must be >= 0');
   }
 
-  // ✅ 1.6) الخصم على الفاتورة
   const invoiceDiscountRate = Number(payload.discount_rate || 0);
   if (!Number.isFinite(invoiceDiscountRate) || invoiceDiscountRate < 0 || invoiceDiscountRate > 100) {
     throw new ApiError(400, 'discount_rate must be between 0 and 100');
@@ -56,26 +54,22 @@ const create = async (companyId, userId, payload) => {
   try {
     await client.query('BEGIN');
 
-    // 2) رقم الأمر
     const number = await NumberingService.next(client, companyId, 'sales_order', {
       prefix: 'SO', pad: 5,
     });
 
-    // 3) العميل
     const cust = await client.query(
       `SELECT id FROM customers WHERE id = $1 AND company_id = $2 AND is_active = TRUE`,
       [payload.customer_id, companyId]
     );
     if (!cust.rowCount) throw new ApiError(400, 'Customer not found or inactive');
 
-    // 4) العملة
     const cur = await client.query(
       `SELECT id FROM currencies WHERE id = $1`,
       [payload.currency_id]
     );
     if (!cur.rowCount) throw new ApiError(400, 'Currency not found');
 
-    // 5) المستودع (اختياري)
     let orderWarehouseId = payload.warehouse_id || null;
     if (orderWarehouseId) {
       const wh = await client.query(
@@ -88,23 +82,34 @@ const create = async (companyId, userId, payload) => {
       }
     }
 
-    // 6) حساب المجاميع + الوحدات + الخصم على الفاتورة
+    // ✅ تحديد الصندوق النقدي إذا كان هناك مبلغ مقبوض نقداً
+    let orderCashRegisterId = null;
+    if (paymentType !== 'credit' && paymentMethod === 'cash') {
+      const register = await CashRegister.resolveAccount(client, companyId, {
+        cash_register_id: payload.cash_register_id || null,
+        branch_id: payload.user_branch_id || null,
+      });
+      orderCashRegisterId = register.id;
+    } else if (payload.cash_register_id) {
+      const register = await CashRegister.resolveAccount(client, companyId, {
+        cash_register_id: payload.cash_register_id,
+      });
+      orderCashRegisterId = register.id;
+    }
+
     const totals = await calculateTotals(
       client,
       companyId,
       payload.items,
-      invoiceDiscountRate  // ✅ تمرير الخصم
+      invoiceDiscountRate
     );
 
-    // ✅ 6.5) التحقق من المبلغ المدفوع
     let paidAmount = Number(payload.paid_amount || 0);
-
     if (paymentType === 'cash') {
-      paidAmount = totals.total;  // ✅ نقدي = كامل
+      paidAmount = totals.total;
     } else if (paymentType === 'credit') {
-      paidAmount = 0;  // ✅ آجل = 0
+      paidAmount = 0;
     } else {
-      // partial
       if (paidAmount <= 0 || paidAmount >= totals.total) {
         throw new ApiError(
           400,
@@ -113,28 +118,27 @@ const create = async (companyId, userId, payload) => {
       }
     }
 
-    // 7) إدراج الأمر — مع الحقول الجديدة
     const orderRes = await client.query(
       `INSERT INTO sales_orders
          (company_id, order_number, customer_id, order_date, currency_id, exchange_rate,
-          subtotal, tax_total, total, status, created_by, warehouse_id,
+          subtotal, tax_total, total, status, created_by, warehouse_id, cash_register_id,
           payment_type, payment_method, payment_terms_days, paid_amount, discount_rate)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', $10, $11,
-               $12, $13, $14, $15, $16)
-       RETURNING id, order_number, status, subtotal, tax_total, total, warehouse_id,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', $10, $11, $12,
+               $13, $14, $15, $16, $17)
+       RETURNING id, order_number, status, subtotal, tax_total, total,
+                 warehouse_id, cash_register_id,
                  payment_type, payment_method, payment_terms_days, paid_amount, discount_rate`,
       [
         companyId, number, payload.customer_id,
         payload.order_date || new Date().toISOString().slice(0, 10),
         payload.currency_id, exchangeRate,
         totals.subtotal, totals.tax_total, totals.total, userId,
-        orderWarehouseId,
+        orderWarehouseId, orderCashRegisterId,
         paymentType, paymentMethod, paymentTermsDays, paidAmount, invoiceDiscountRate,
       ]
     );
     const order = orderRes.rows[0];
 
-    // 8) إدراج البنود
     for (const item of totals.enrichedItems) {
       await client.query(
         `INSERT INTO sales_order_items
@@ -157,6 +161,7 @@ const create = async (companyId, userId, payload) => {
       ...order,
       items: totals.enrichedItems,
       warehouse_id: orderWarehouseId,
+      cash_register_id: orderCashRegisterId,
     };
   } catch (err) {
     await client.query('ROLLBACK');
@@ -165,14 +170,11 @@ const create = async (companyId, userId, payload) => {
     client.release();
   }
 };
+
 /* ============================================================
  * تأكيد طلب بيع
- * - تحقق من الحسابات أولاً (fail fast)
- * - إعادة تحقق من الحد الأدنى لسعر البيع
- * - استهلاك المخزون بالوحدة الأساسية (FIFO داخل المستودع إن حُدِّد)
- * - قيد محاسبي متوازن
  * ============================================================ */
-const confirm = async (companyId, userId, orderId) => {
+const confirm = async (companyId, userId, orderId, userBranchId = null) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -188,7 +190,7 @@ const confirm = async (companyId, userId, orderId) => {
       throw new ApiError(400, 'Only draft orders can be confirmed');
     }
 
-    // 2) الحسابات أولاً (fail fast)
+    // 2) الحسابات الأساسية
     const accounts = await getDefaultAccounts(client, companyId);
 
     // 3) البنود
@@ -201,7 +203,7 @@ const confirm = async (companyId, userId, orderId) => {
     );
     if (!itemsRes.rowCount) throw new ApiError(400, 'Order has no items');
 
-    // 4) سعر الصرف
+    // 4) سعر الصرف والمبالغ بالعملة الأساسية
     const exchange = await currencyUtil.toBase(
       companyId, 1, order.currency_id, order.order_date
     );
@@ -212,6 +214,38 @@ const confirm = async (companyId, userId, orderId) => {
     const totalBase    = round2(Number(order.total) * rate);
     const subtotalBase = round2(Number(order.subtotal) * rate);
     const taxBase      = round2(Number(order.tax_total) * rate);
+    const discountBase = round2(subtotalBase + taxBase - totalBase);
+
+    // تحديد المبلغ المدفوع والمتبقي (آجل)
+    const rawPaid =
+      order.payment_type === 'cash'
+        ? Number(order.total)
+        : order.payment_type === 'credit'
+          ? 0
+          : Number(order.paid_amount || 0);
+
+    const paidBase = round2(rawPaid * rate);
+    const remainingBase = round2(totalBase - paidBase);
+
+    // ✅ تحديد حساب القبض (صندوق نقدي محدد أو بنك)
+    let resolvedRegister = null;
+    let collectionAccountId = null;
+
+    if (paidBase > 0) {
+      const method = order.payment_method || 'cash';
+      if (method === 'cash') {
+        resolvedRegister = await CashRegister.resolveAccount(client, companyId, {
+          cash_register_id: order.cash_register_id || null,
+          branch_id: userBranchId,
+        });
+        collectionAccountId = resolvedRegister.account_id;
+      } else {
+        if (!accounts.bank) {
+          throw new ApiError(500, 'Required bank account (1112) not found or inactive');
+        }
+        collectionAccountId = accounts.bank;
+      }
+    }
 
     // 5) إعادة تحقق من الحد الأدنى لسعر البيع
     for (const item of itemsRes.rows) {
@@ -224,11 +258,10 @@ const confirm = async (companyId, userId, orderId) => {
       }
     }
 
-    // 6) warehouse_id من الطلب
+    // 6) استهلاك المخزون
     const orderWarehouseId = order.warehouse_id || null;
-
-    // 7) استهلاك المخزون
     let totalCogs = 0;
+
     for (const item of itemsRes.rows) {
       const baseQty = Number(item.quantity) * Number(item.conversion_factor || 1);
       if (baseQty <= 0) {
@@ -245,7 +278,6 @@ const confirm = async (companyId, userId, orderId) => {
       );
       totalCogs += consumed.cogs;
 
-      // سجل حركة المخزون — reference_type = 'sale'
       await client.query(
         `INSERT INTO stock_movements
            (company_id, warehouse_id, batch_id, movement_type, quantity, unit_cost,
@@ -265,23 +297,43 @@ const confirm = async (companyId, userId, orderId) => {
       );
     }
 
-    // 8) بناء القيد
-    const lines = [
-      {
+    // 7) بناء القيد المحاسبي المتوازن
+    const lines = [];
+
+    // الجانب المدين: المقبوض نقداً/بنكاً + المتبقي على العميل
+    if (paidBase > 0) {
+      lines.push({
+        account_id: collectionAccountId,
+        debit: paidBase,
+        credit: 0,
+        description: resolvedRegister
+          ? `مبيعات نقدية - ${resolvedRegister.name} (${order.order_number})`
+          : `تحصيل مبيعات (${order.order_number})`,
+      });
+    }
+    if (remainingBase > 0) {
+      lines.push({
         account_id: accounts.receivable,
-        debit: totalBase, credit: 0,
-        description: `طلب بيع ${order.order_number}`,
-      },
-      {
-        account_id: accounts.revenue,
-        credit: subtotalBase, debit: 0,
-        description: 'إيراد مبيعات',
-      },
-    ];
+        debit: remainingBase,
+        credit: 0,
+        description: `ذمم مبيعات ${order.order_number}`,
+      });
+    }
+
+    // الجانب الدائن: صافي الإيراد + الضريبة
+    const netRevenueBase = round2(subtotalBase - discountBase);
+    lines.push({
+      account_id: accounts.revenue,
+      credit: netRevenueBase,
+      debit: 0,
+      description: 'إيراد مبيعات',
+    });
+
     if (taxBase > 0) {
       lines.push({
         account_id: accounts.vat,
-        credit: taxBase, debit: 0,
+        credit: taxBase,
+        debit: 0,
         description: 'ضريبة القيمة المضافة',
       });
     }
@@ -290,23 +342,20 @@ const confirm = async (companyId, userId, orderId) => {
       lines.push(
         {
           account_id: accounts.cogs,
-          debit: round2(totalCogs), credit: 0,
+          debit: round2(totalCogs),
+          credit: 0,
           description: 'تكلفة المبيعات',
         },
         {
           account_id: accounts.inventory,
-          credit: round2(totalCogs), debit: 0,
+          credit: round2(totalCogs),
+          debit: 0,
           description: 'خصم مخزون',
         }
       );
-    } else {
-      console.warn(
-        `[salesOrder.confirm] totalCogs = 0 for order ${order.order_number} — ` +
-        `no COGS entry created.`
-      );
     }
 
-    // 9) إنشاء القيد وترحيله
+    // 8) إنشاء القيد وترحيله
     const entry = await JournalEntry.create(client, companyId, {
       entry_date: order.order_date,
       description: `قيد طلب بيع ${order.order_number}`,
@@ -317,10 +366,36 @@ const confirm = async (companyId, userId, orderId) => {
     });
     await JournalEntry.post(client, companyId, entry.id, userId);
 
-    // 10) تحديث الأمر
+    // 9) تسجيل سند القبض في payments إذا تم قبض مبلغ
+    if (rawPaid > 0) {
+      const voucherNumber = await NumberingService.next(client, companyId, 'receipt_voucher', {
+        prefix: 'REC', pad: 5,
+      });
+      await Payment.create(client, companyId, {
+        customer_id: order.customer_id,
+        cash_register_id: resolvedRegister ? resolvedRegister.id : null,
+        payment_type: 'receive',
+        amount: rawPaid,
+        currency_id: order.currency_id,
+        payment_date: order.order_date,
+        method: order.payment_method || 'cash',
+        voucher_number: voucherNumber,
+        description: `تحصيل طلب بيع ${order.order_number}`,
+        journal_entry_id: entry.id,
+        created_by: userId,
+      });
+    }
+
+    // 10) تحديث الأمر (وتثبيت cash_register_id الفعلي الذي تم التحصيل إليه)
+    const finalRegisterId = resolvedRegister ? resolvedRegister.id : order.cash_register_id;
     await client.query(
-      `UPDATE sales_orders SET status = 'confirmed', journal_entry_id = $1 WHERE id = $2`,
-      [entry.id, orderId]
+      `UPDATE sales_orders
+       SET status = 'confirmed',
+           journal_entry_id = $1,
+           cash_register_id = $2,
+           paid_amount = $3
+       WHERE id = $4`,
+      [entry.id, finalRegisterId, rawPaid, orderId]
     );
 
     await client.query('COMMIT');
@@ -328,6 +403,7 @@ const confirm = async (companyId, userId, orderId) => {
       id: orderId,
       status: 'confirmed',
       journal_entry_id: entry.id,
+      cash_register_id: finalRegisterId,
       total_cogs: round2(totalCogs),
     };
   } catch (err) {
@@ -340,8 +416,6 @@ const confirm = async (companyId, userId, orderId) => {
 
 /* ============================================================
  * إلغاء طلب بيع
- * - draft: حذف مباشر
- * - confirmed: قيد عكسي + إرجاع المخزون
  * ============================================================ */
 const cancel = async (companyId, userId, orderId) => {
   const client = await pool.connect();
@@ -359,7 +433,6 @@ const cancel = async (companyId, userId, orderId) => {
     }
 
     if (order.status === 'confirmed') {
-      // 1) إرجاع المخزون
       const movements = await client.query(
         `SELECT sm.batch_id, SUM(sm.quantity)::numeric AS total_qty
          FROM stock_movements sm
@@ -386,7 +459,6 @@ const cancel = async (companyId, userId, orderId) => {
         }
       }
 
-      // 2) سجل حركات عكسية
       for (const mv of movements.rows) {
         if (!mv.batch_id) continue;
 
@@ -401,7 +473,6 @@ const cancel = async (companyId, userId, orderId) => {
         );
       }
 
-      // 3) قيد عكسي
       if (order.journal_entry_id) {
         const original = await JournalEntry.findById(companyId, order.journal_entry_id);
         if (original && original.lines) {
@@ -424,7 +495,6 @@ const cancel = async (companyId, userId, orderId) => {
       }
     }
 
-    // 4) تحديث الحالة
     await client.query(
       `UPDATE sales_orders SET status = 'cancelled' WHERE id = $1`,
       [orderId]
@@ -442,13 +512,6 @@ const cancel = async (companyId, userId, orderId) => {
 
 /* ============================================================
  * حساب المجاميع + الوحدات
- *
- * المفاهيم:
- * - paid_quantity: الكمية المدفوعة بالوحدة المختارة
- * - bonus_quantity: الكمية المجانية (هدية) بالوحدة المختارة
- * - quantity: paid + bonus (بالوحدة المختارة)
- * - base_quantity: quantity × conversion_factor (للمخزون)
- * - net_unit_price: سعر الوحدة المختارة بعد الخصم (على paid فقط)
  * ============================================================ */
 async function calculateTotals(client, companyId, items, invoiceDiscountRate = 0) {
   if (!Array.isArray(items) || items.length === 0) {
@@ -491,10 +554,8 @@ async function calculateTotals(client, companyId, items, invoiceDiscountRate = 0
       conversionFactor = resolved.conversionFactor;
     }
 
-    // ✅ لا خصم على البند — الخصم على الفاتورة
     const grossSubtotal = paidQty * price;
-    const netSubtotal = grossSubtotal;  // ✅ بدون خصم على البند
-
+    const netSubtotal = grossSubtotal;
     const netUnitPrice = paidQty > 0 ? round2(netSubtotal / paidQty) : 0;
 
     if (item.unit_id) {
@@ -522,8 +583,8 @@ async function calculateTotals(client, companyId, items, invoiceDiscountRate = 0
       quantity: totalPhysicalQty,
       base_quantity: round2(totalPhysicalQty * conversionFactor),
       unit_price: price,
-      discount_rate: 0,             // ✅ لا خصم على البند
-      discount_amount: 0,           // ✅
+      discount_rate: 0,
+      discount_amount: 0,
       net_unit_price: netUnitPrice,
       tax_rate: taxRate,
       tax_amount: round2(taxAmount),
@@ -531,24 +592,21 @@ async function calculateTotals(client, companyId, items, invoiceDiscountRate = 0
     });
   }
 
-  // ✅ تطبيق الخصم على الفاتورة
   const discountAmount = subtotal * (invoiceDiscountRate / 100);
   const netAfterDiscount = subtotal - discountAmount;
 
   return {
     subtotal: round2(subtotal),
-    discount_amount: round2(discountAmount),     // 🆕
-    net_after_discount: round2(netAfterDiscount), // 🆕
+    discount_amount: round2(discountAmount),
+    net_after_discount: round2(netAfterDiscount),
     tax_total: round2(taxTotal),
-    total: round2(netAfterDiscount + taxTotal),   // ✅ الإجمالي بعد الخصم
+    total: round2(netAfterDiscount + taxTotal),
     enrichedItems,
   };
 }
 
 /* ============================================================
  * استهلاك المخزون FIFO
- *
- * ✅ FIX: يستبعد الدفعات المنتهية (expiry_date > CURRENT_DATE)
  * ============================================================ */
 async function consumeStock(
   client,
@@ -565,13 +623,10 @@ async function consumeStock(
 
   let totalCogs = 0;
   let firstBatchId = null;
-
   let query;
   let params;
 
   if (preferredBatchId) {
-    // 1) دفعة محددة (يتجاهل warehouseId)
-    // ✅ نستبعد المنتهية
     query = `
       SELECT id, quantity, cost_price
       FROM product_batches
@@ -582,8 +637,6 @@ async function consumeStock(
     `;
     params = [preferredBatchId, productId, companyId];
   } else if (warehouseId) {
-    // 2) مستودع محدد (FIFO داخل المستودع)
-    // ✅ نستبعد المنتهية
     query = `
       SELECT id, quantity, cost_price
       FROM product_batches
@@ -597,8 +650,6 @@ async function consumeStock(
     `;
     params = [productId, companyId, warehouseId];
   } else {
-    // 3) أي مستودع (FIFO عام)
-    // ✅ نستبعد المنتهية
     query = `
       SELECT id, quantity, cost_price
       FROM product_batches
@@ -660,27 +711,35 @@ async function consumeStock(
  * جلب الحسابات الافتراضية
  * ============================================================ */
 async function getDefaultAccounts(client, companyId) {
-  const codes = {
+  const requiredCodes = {
     receivable: '112',
     revenue: '411',
     vat: '213',
     cogs: '511',
     inventory: '113',
   };
+  const optionalCodes = {
+    bank: '1112',
+  };
+
+  const allCodes = [...Object.values(requiredCodes), ...Object.values(optionalCodes)];
 
   const r = await client.query(
     `SELECT code, id FROM chart_of_accounts
      WHERE company_id = $1 AND code = ANY($2::text[]) AND is_active = TRUE`,
-    [companyId, Object.values(codes)]
+    [companyId, allCodes]
   );
 
   const map = {};
   for (const row of r.rows) {
-    const key = Object.keys(codes).find((k) => codes[k] === row.code);
-    if (key) map[key] = row.id;
+    const reqKey = Object.keys(requiredCodes).find((k) => requiredCodes[k] === row.code);
+    if (reqKey) map[reqKey] = row.id;
+
+    const optKey = Object.keys(optionalCodes).find((k) => optionalCodes[k] === row.code);
+    if (optKey) map[optKey] = row.id;
   }
 
-  for (const [key, code] of Object.entries(codes)) {
+  for (const [key, code] of Object.entries(requiredCodes)) {
     if (!map[key]) {
       throw new ApiError(500, `Required account ${code} (${key}) not found or inactive`);
     }

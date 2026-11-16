@@ -29,6 +29,9 @@ const PAYMENT_METHODS = ['cash', 'bank', 'cheque'];
  *         name: invoice_id
  *         schema: { type: string, format: uuid }
  *       - in: query
+ *         name: cash_register_id
+ *         schema: { type: string, format: uuid }
+ *       - in: query
  *         name: payment_type
  *         schema:
  *           type: string
@@ -68,6 +71,8 @@ const PAYMENT_METHODS = ['cash', 'bank', 'cheque'];
  *                           amount: { type: number }
  *                           payment_date: { type: string, format: date }
  *                           method: { type: string }
+ *                           cash_register_id: { type: string, format: uuid, nullable: true }
+ *                           cash_register_name: { type: string, nullable: true }
  *                           party_name: { type: string, nullable: true }
  *                           invoice_number: { type: string, nullable: true }
  *                     pagination:
@@ -80,6 +85,7 @@ router.get(
   authorize('payments.view'),
   [
     query('invoice_id').optional().isUUID(),
+    query('cash_register_id').optional().isUUID(),
     query('payment_type').optional().isIn(['receive', 'pay', 'refund', 'credit_apply']),
     query('date_from').optional().isISO8601(),
     query('date_to').optional().isISO8601(),
@@ -128,6 +134,10 @@ router.get(
  *               customer_id:
  *                 type: string
  *                 format: uuid
+ *               cash_register_id:
+ *                 type: string
+ *                 format: uuid
+ *                 nullable: true
  *               amount:
  *                 type: number
  *                 exclusiveMinimum: 0
@@ -157,6 +167,7 @@ router.get(
  *                 payment_type: receive
  *                 amount: 500
  *                 method: cash
+ *                 cash_register_id: "660e8400-e29b-41d4-a716-446655440001"
  *             manual:
  *               summary: سند يدوي
  *               value:
@@ -182,6 +193,7 @@ router.post(
     body('invoice_id').optional().isUUID(),
     body('supplier_id').optional().isUUID(),
     body('customer_id').optional().isUUID(),
+    body('cash_register_id').optional({ nullable: true }).isUUID(),
 
     body('amount').isFloat({ gt: 0 }),
 
@@ -200,7 +212,7 @@ router.post(
     body('reference').optional().isString().trim().isLength({ max: 200 }),
     body('external_reference').optional().isString().trim().isLength({ max: 200 }),
     body('description').optional().isString().trim().isLength({ max: 500 }),
-    body('cash_account_id').optional().isUUID(),
+    body('cash_account_id').optional({ nullable: true }).isUUID(),
   ],
   validate,
   ctrl.create
@@ -277,6 +289,10 @@ router.delete(
  *               return_id:
  *                 type: string
  *                 format: uuid
+ *               cash_register_id:
+ *                 type: string
+ *                 format: uuid
+ *                 nullable: true
  *               payment_date:
  *                 type: string
  *                 format: date
@@ -303,9 +319,10 @@ router.post(
     body('customer_id').isUUID(),
     body('amount').isFloat({ gt: 0 }),
     body('return_id').optional().isUUID(),
+    body('cash_register_id').optional({ nullable: true }).isUUID(),
     body('payment_date').optional().isISO8601(),
     body('method').optional().isIn(PAYMENT_METHODS),
-    body('cash_account_id').optional().isUUID(),
+    body('cash_account_id').optional({ nullable: true }).isUUID(),
     body('reference').optional().isString().trim().isLength({ max: 200 }),
   ],
   validate,
@@ -314,7 +331,7 @@ router.post(
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /payments/apply-credit — تخصيص رصيد لفاتورة
-// ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
 /**
  * @swagger
  * /payments/apply-credit:

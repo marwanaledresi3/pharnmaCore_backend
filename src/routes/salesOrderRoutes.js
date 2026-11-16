@@ -17,6 +17,7 @@ const listRules = [
   query('status').optional().isIn(STATUSES),
   query('customer_id').optional().isUUID(),
   query('warehouse_id').optional().isUUID(),
+  query('cash_register_id').optional().isUUID(),
   query('date_from').optional().isISO8601(),
   query('date_to').optional().isISO8601(),
   query('search').optional().isString().trim().isLength({ max: 200 }),
@@ -29,6 +30,7 @@ const createRules = [
   body('customer_id').isUUID(),
   body('currency_id').isUUID(),
   body('warehouse_id').optional({ nullable: true }).isUUID(),
+  body('cash_register_id').optional({ nullable: true }).isUUID(),
   body('order_date').optional().isISO8601(),
   body('exchange_rate').optional().isFloat({ gt: 0 }),
   body('payment_type').optional().isIn(['cash', 'credit', 'partial']),
@@ -93,6 +95,9 @@ const createRules = [
  *         schema: { type: string, format: uuid }
  *       - in: query
  *         name: warehouse_id
+ *         schema: { type: string, format: uuid }
+ *       - in: query
+ *         name: cash_register_id
  *         schema: { type: string, format: uuid }
  *       - in: query
  *         name: date_from
@@ -182,12 +187,33 @@ router.get(
  *               warehouse_id:
  *                 type: string
  *                 format: uuid
+ *               cash_register_id:
+ *                 type: string
+ *                 format: uuid
+ *                 nullable: true
  *               order_date:
  *                 type: string
  *                 format: date
  *               exchange_rate:
  *                 type: number
  *                 exclusiveMinimum: 0
+ *               payment_type:
+ *                 type: string
+ *                 enum: [cash, credit, partial]
+ *               payment_method:
+ *                 type: string
+ *                 enum: [cash, bank, cheque]
+ *               payment_terms_days:
+ *                 type: integer
+ *                 minimum: 0
+ *                 maximum: 365
+ *               paid_amount:
+ *                 type: number
+ *                 minimum: 0
+ *               discount_rate:
+ *                 type: number
+ *                 minimum: 0
+ *                 maximum: 100
  *               items:
  *                 type: array
  *                 minItems: 1

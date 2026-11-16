@@ -3,6 +3,7 @@ const { pool } = require('../config/pool');
 const ApiError = require('../errors/ApiError');
 const Invoice = require('../models/Invoice');
 const Payment = require('../models/Payment');
+const CashRegister = require('../models/CashRegister');
 const JournalEntry = require('../models/JournalEntry');
 const Notification = require('../models/Notification');
 const NumberingService = require('./numberingService');
@@ -22,13 +23,57 @@ const {
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * ✅ حساب الصندوق/البنك — مع التحقق من الملكية والنشاط
+ * ✅ تحديد حساب الصندوق أو البنك + إرجاع cash_register_id عند الدفع النقدي
+ * الأولوية للدفع النقدي:
+ *   1) payload.cash_account_id (حساب صريح)
+ *   2) payload.cash_register_id (صندوق محدد)
+ *   3) الصندوق المربوط بفرع المستخدم (payload.user_branch_id)
+ *   4) الصندوق الافتراضي للشركة (is_default = true)
+ *   5) إعدادات الشركة / كود 1111 كـ fallback أخير
  */
-async function findCashAccount(client, companyId, method) {
+async function resolveCashOrBankAccount(client, companyId, {
+  method = 'cash',
+  cash_account_id = null,
+  cash_register_id = null,
+  user_branch_id = null,
+} = {}) {
   const isBank = method === 'bank' || method === 'cheque';
-  const settingsKey = isBank ? 'payment_bank_account_id' : 'payment_cash_account_id';
 
-  // 1) حاول من settings
+  // إذا مُرِّر حساب محاسبي صريح
+  if (cash_account_id) {
+    const check = await client.query(
+      `SELECT id FROM chart_of_accounts
+       WHERE id = $1 AND company_id = $2 AND is_active = TRUE`,
+      [cash_account_id, companyId]
+    );
+    if (!check.rowCount) {
+      throw new ApiError(400, 'الحساب النقدي/البنكي المحدد غير موجود أو غير نشط');
+    }
+    return { cashAccountId: cash_account_id, cashRegisterId: cash_register_id || null };
+  }
+
+  // في حالة الدفع النقدي (أو المحفظة/البطاقة إذا لم تُحوَّل للبنك): نستخدم نظام الصناديق
+  if (!isBank) {
+    // إذا حُدد صندوق أو فرع أو يوجد صندوق افتراضي في cash_registers
+    const hasRegisters = await client.query(
+      `SELECT 1 FROM cash_registers WHERE company_id = $1 AND is_active = TRUE LIMIT 1`,
+      [companyId]
+    );
+
+    if (hasRegisters.rowCount || cash_register_id) {
+      const register = await CashRegister.resolveAccount(client, companyId, {
+        cash_register_id,
+        branch_id: user_branch_id,
+      });
+      return {
+        cashAccountId: register.account_id,
+        cashRegisterId: register.id,
+      };
+    }
+  }
+
+  // مسار البنك أو fallback إذا لم تُنشأ صناديق بعد
+  const settingsKey = isBank ? 'payment_bank_account_id' : 'payment_cash_account_id';
   const accountId = await settingsService.get(companyId, settingsKey, null, client);
   if (accountId) {
     const check = await client.query(
@@ -36,18 +81,19 @@ async function findCashAccount(client, companyId, method) {
        WHERE id = $1 AND company_id = $2 AND is_active = TRUE`,
       [accountId, companyId]
     );
-    if (check.rowCount) return accountId;
+    if (check.rowCount) {
+      return { cashAccountId: accountId, cashRegisterId: null };
+    }
     console.warn(
       `[paymentService] settings.${settingsKey}=${accountId} is invalid — falling back`
     );
   }
 
-  // 2) fallback: الكود الافتراضي
   const code = isBank ? '1112' : '1111';
   const accounts = await requireActiveAccounts(
     client, companyId, [code], `في حساب ${isBank ? 'البنك' : 'الصندوق'}`
   );
-  return accounts[code];
+  return { cashAccountId: accounts[code], cashRegisterId: null };
 }
 
 /**
@@ -87,12 +133,9 @@ async function generateVoucherNumber(client, companyId, type) {
 
 /**
  * ✅ إنشاء قيد + Payment معاً بشكل ذرّي
- * - ينشئ القيد (draft)
- * - ينشئ Payment
- * - يربط القيد بالدفعة
- * - يتحقق من التوازن
- * - يُرحّل القيد
- * - كل ذلك داخل نفس transaction
+ */
+/**
+ * ✅ إنشاء قيد + Payment معاً بشكل ذرّي
  */
 async function createPaymentWithJournal(client, companyId, userId, {
   lines,
@@ -101,30 +144,36 @@ async function createPaymentWithJournal(client, companyId, userId, {
   sourceType,
   paymentData,
 }) {
-  // 1) التحقق من التوازن قبل الإنشاء
   assertBalanced(lines, 'في الدفعة');
 
-  // 2) إنشاء القيد (draft)
   const je = await JournalEntry.create(client, companyId, {
     entry_date: entryDate || new Date().toISOString().slice(0, 10),
     description: entryDescription,
     source_type: sourceType || 'payment',
-    source_id: null, // سيُحدَّث
+    source_id: null,
     created_by: userId,
     lines,
   });
 
-  // 3) verify بعد الإنشاء (defensive)
   await verifyJournalEntry(client, je.id, 'في الدفعة');
 
-  // 4) إنشاء Payment
   const payment = await Payment.create(client, companyId, {
     ...paymentData,
     journal_entry_id: je.id,
     created_by: userId,
   });
 
-  // 5) ربط القيد بالدفعة
+  // ضمان حفظ cash_register_id في جدول payments في حال لم يكن مدرجاً داخل Payment.create
+  if (paymentData.cash_register_id) {
+    await client.query(
+      `UPDATE payments
+       SET cash_register_id = $1
+       WHERE id = $2 AND company_id = $3`,
+      [paymentData.cash_register_id, payment.id, companyId]
+    );
+    payment.cash_register_id = paymentData.cash_register_id;
+  }
+
   const link = await client.query(
     `UPDATE journal_entries
      SET source_id = $1
@@ -136,11 +185,10 @@ async function createPaymentWithJournal(client, companyId, userId, {
     throw new ApiError(500, 'فشل ربط القيد بالدفعة');
   }
 
-  // 6) ترحيل القيد
   await JournalEntry.post(client, companyId, je.id, userId);
 
   return { payment, journal_entry_id: je.id };
-}
+};
 
 // ═══════════════════════════════════════════════════════════════
 // 1) سداد فاتورة بيع (receive)
@@ -182,9 +230,14 @@ const createForInvoice = async (companyId, userId, payload) => {
     const invRate = await getInvoiceRate(client, companyId, inv.id);
     const amountBase = round2(amount * invRate);
 
-    // 4) الحسابات (إجبارية)
-    const cashAccountId = payload.cash_account_id
-      || (await findCashAccount(client, companyId, payload.method || 'cash'));
+    // 4) الحسابات + تحديد الصندوق
+    const method = payload.method || 'cash';
+    const { cashAccountId, cashRegisterId } = await resolveCashOrBankAccount(client, companyId, {
+      method,
+      cash_account_id: payload.cash_account_id || null,
+      cash_register_id: payload.cash_register_id || null,
+      user_branch_id: payload.user_branch_id || null,
+    });
 
     const accounts = await requireActiveAccounts(
       client, companyId, ['112'], 'في دفعة الفاتورة'
@@ -210,11 +263,13 @@ const createForInvoice = async (companyId, userId, payload) => {
       sourceType: 'payment',
       paymentData: {
         invoice_id: inv.id,
+        customer_id: inv.customer_id || null,
+        cash_register_id: cashRegisterId,
         payment_type: 'receive',
         amount,
         currency_id: inv.currency_id,
         payment_date: payload.payment_date || new Date().toISOString().slice(0, 10),
-        method: payload.method || 'cash',
+        method,
         reference: payload.reference || null,
         external_reference: payload.external_reference || null,
         description: payload.description || null,
@@ -237,7 +292,12 @@ const createForInvoice = async (companyId, userId, payload) => {
           type: 'payment_received',
           title: `دفعة مستلمة: ${voucherNumber}`,
           message: `استلمت ${amount} على الفاتورة ${inv.invoice_number}.`,
-          metadata: { payment_id: result.payment.id, invoice_id: inv.id, amount },
+          metadata: {
+            payment_id: result.payment.id,
+            invoice_id: inv.id,
+            cash_register_id: cashRegisterId,
+            amount,
+          },
           referenceType: 'payment',
           referenceId: result.payment.id,
           uniqueKey: `payment_received:${result.payment.id}`,
@@ -297,8 +357,13 @@ const createForPurchaseInvoice = async (companyId, userId, payload) => {
     const invRate = await getInvoiceRate(client, companyId, inv.id);
     const amountBase = round2(amount * invRate);
 
-    const cashAccountId = payload.cash_account_id
-      || (await findCashAccount(client, companyId, payload.method || 'cash'));
+    const method = payload.method || 'cash';
+    const { cashAccountId, cashRegisterId } = await resolveCashOrBankAccount(client, companyId, {
+      method,
+      cash_account_id: payload.cash_account_id || null,
+      cash_register_id: payload.cash_register_id || null,
+      user_branch_id: payload.user_branch_id || null,
+    });
 
     const accounts = await requireActiveAccounts(
       client, companyId, ['211'], 'في دفعة الفاتورة'
@@ -321,11 +386,13 @@ const createForPurchaseInvoice = async (companyId, userId, payload) => {
       sourceType: 'payment',
       paymentData: {
         invoice_id: inv.id,
+        supplier_id: inv.supplier_id || null,
+        cash_register_id: cashRegisterId,
         payment_type: 'pay',
         amount,
         currency_id: inv.currency_id,
         payment_date: payload.payment_date || new Date().toISOString().slice(0, 10),
-        method: payload.method || 'cash',
+        method,
         reference: payload.reference || null,
         external_reference: payload.external_reference || null,
         description: payload.description || null,
@@ -337,7 +404,6 @@ const createForPurchaseInvoice = async (companyId, userId, payload) => {
     await client.query('COMMIT');
     transactionStarted = false;
 
-    // إشعار
     try {
       const notifyClient = await pool.connect();
       try {
@@ -346,7 +412,12 @@ const createForPurchaseInvoice = async (companyId, userId, payload) => {
           type: 'payment_made',
           title: `دفعة صادرة: ${voucherNumber}`,
           message: `دفعت ${amount} للمورد على الفاتورة ${inv.invoice_number}.`,
-          metadata: { payment_id: result.payment.id, invoice_id: inv.id, amount },
+          metadata: {
+            payment_id: result.payment.id,
+            invoice_id: inv.id,
+            cash_register_id: cashRegisterId,
+            amount,
+          },
           referenceType: 'payment',
           referenceId: result.payment.id,
           uniqueKey: `payment_made:${result.payment.id}`,
@@ -382,9 +453,18 @@ const createManualPayment = async (companyId, userId, payload) => {
     transactionStarted = true;
 
     const {
-      payment_type, amount, payment_date,
-      method = 'cash', reference, external_reference, description,
-      supplier_id, customer_id, cash_account_id,
+      payment_type,
+      amount,
+      payment_date,
+      method = 'cash',
+      reference,
+      external_reference,
+      description,
+      supplier_id,
+      customer_id,
+      cash_account_id,
+      cash_register_id,
+      user_branch_id,
     } = payload;
 
     if (!description || !String(description).trim()) {
@@ -400,7 +480,6 @@ const createManualPayment = async (companyId, userId, payload) => {
       throw new ApiError(400, 'Invalid payment_type');
     }
 
-    // الحساب المقابل + الحسابات المطلوبة
     let partyAccountCode;
     if (payment_type === 'receive') {
       if (!customer_id) throw new ApiError(400, 'يرجى اختيار العميل');
@@ -424,10 +503,13 @@ const createManualPayment = async (companyId, userId, payload) => {
       client, companyId, [partyAccountCode], 'في السند'
     );
 
-    const cashAccountId = cash_account_id
-      || (await findCashAccount(client, companyId, method));
+    const { cashAccountId, cashRegisterId } = await resolveCashOrBankAccount(client, companyId, {
+      method,
+      cash_account_id: cash_account_id || null,
+      cash_register_id: cash_register_id || null,
+      user_branch_id: user_branch_id || null,
+    });
 
-    // بناء السطور
     const lines = buildPaymentLines({
       accounts: { cashAccountId, partyAccountId: accounts[partyAccountCode] },
       amount: amt,
@@ -436,11 +518,9 @@ const createManualPayment = async (companyId, userId, payload) => {
       description,
     });
 
-    // رقم السند + العملة
     const voucherNumber = await generateVoucherNumber(client, companyId, payment_type);
     const currencyId = await getCompanyBaseCurrencyId(client, companyId);
 
-    // إنشاء Payment + قيد
     const result = await createPaymentWithJournal(client, companyId, userId, {
       lines,
       entryDate: payment_date,
@@ -450,6 +530,7 @@ const createManualPayment = async (companyId, userId, payload) => {
         invoice_id: null,
         supplier_id: supplier_id || null,
         customer_id: customer_id || null,
+        cash_register_id: cashRegisterId,
         payment_type,
         amount: amt,
         currency_id: currencyId,
@@ -488,21 +569,28 @@ const refundToCustomer = async (companyId, userId, payload) => {
     await client.query('BEGIN');
     transactionStarted = true;
 
-    const { customer_id, amount, return_id, method, reference } = payload;
+    const {
+      customer_id,
+      amount,
+      return_id,
+      method = 'cash',
+      reference,
+      cash_account_id,
+      cash_register_id,
+      user_branch_id,
+    } = payload;
 
     const amt = Number(amount);
     if (!Number.isFinite(amt) || amt <= 0) {
       throw new ApiError(400, 'Amount must be > 0');
     }
 
-    // 1) تحقق من العميل
     const cust = await client.query(
       `SELECT id FROM customers WHERE id = $1 AND company_id = $2 AND is_active = TRUE`,
       [customer_id, companyId]
     );
     if (!cust.rowCount) throw new ApiError(400, 'Customer not found or inactive');
 
-    // 2) تحقق من المرتجع (إن وُجد)
     let returnRef = null;
     if (return_id) {
       const ret = await client.query(
@@ -521,7 +609,6 @@ const refundToCustomer = async (companyId, userId, payload) => {
         throw new ApiError(400, 'Return must be confirmed before refund');
       }
 
-      // سقف الاسترداد
       const refundedRes = await client.query(
         `SELECT COALESCE(SUM(amount), 0)::numeric AS refunded
          FROM payments
@@ -539,32 +626,32 @@ const refundToCustomer = async (companyId, userId, payload) => {
       }
     }
 
-    // 3) رصيد العميل
     const credit = await Payment.getCustomerCredit(client, companyId, customer_id);
     if (amt > credit + 0.01) {
       throw new ApiError(400, `Refund amount (${amt}) exceeds customer credit (${credit})`);
     }
 
-    // 4) الحسابات + رقم السند
     const accounts = await requireActiveAccounts(
       client, companyId, ['112'], 'في الاسترداد'
     );
-    const cashAccountId = payload.cash_account_id
-      || (await findCashAccount(client, companyId, method || 'cash'));
+
+    const { cashAccountId, cashRegisterId } = await resolveCashOrBankAccount(client, companyId, {
+      method,
+      cash_account_id: cash_account_id || null,
+      cash_register_id: cash_register_id || null,
+      user_branch_id: user_branch_id || null,
+    });
 
     const voucherNumber = await generateVoucherNumber(client, companyId, 'pay');
 
-    // 5) السطور
     const lines = buildRefundLines({
       accounts: { cashAccountId, partyAccountId: accounts['112'] },
       amount: amt,
       reference: returnRef ? returnRef.return_number : voucherNumber,
     });
 
-    // 6) العملة
     const currencyId = await getCompanyBaseCurrencyId(client, companyId);
 
-    // 7) إنشاء Payment + قيد
     const result = await createPaymentWithJournal(client, companyId, userId, {
       lines,
       entryDate: payload.payment_date,
@@ -573,11 +660,12 @@ const refundToCustomer = async (companyId, userId, payload) => {
       paymentData: {
         invoice_id: null,
         customer_id,
+        cash_register_id: cashRegisterId,
         payment_type: 'refund',
         amount: amt,
         currency_id: currencyId,
         payment_date: payload.payment_date || new Date().toISOString().slice(0, 10),
-        method: method || 'cash',
+        method,
         reference: reference || null,
         voucher_number: voucherNumber,
         description: returnRef
@@ -586,7 +674,6 @@ const refundToCustomer = async (companyId, userId, payload) => {
       },
     });
 
-    // 8) ملاحظة المرتجع
     if (returnRef) {
       const noteUpd = await client.query(
         `UPDATE payments SET notes = $1 WHERE id = $2 AND company_id = $3 RETURNING id`,
@@ -629,7 +716,6 @@ const applyCreditToInvoice = async (companyId, userId, payload) => {
       throw new ApiError(400, 'Amount must be > 0');
     }
 
-    // 1) قفل الفاتورة
     const invRes = await client.query(
       `SELECT * FROM invoices WHERE id = $1 AND company_id = $2 FOR UPDATE`,
       [invoice_id, companyId]
@@ -648,27 +734,23 @@ const applyCreditToInvoice = async (companyId, userId, payload) => {
       throw new ApiError(400, `Amount exceeds remaining balance (${remaining})`);
     }
 
-    // 2) رصيد العميل
     const credit = await Payment.getCustomerCredit(client, companyId, inv.customer_id);
     if (amt > credit + 0.01) {
       throw new ApiError(400, `Amount (${amt}) exceeds customer credit (${credit})`);
     }
 
-    // 3) الحسابات
     const accounts = await requireActiveAccounts(
       client, companyId, ['112'], 'في تخصيص الرصيد'
     );
 
     const voucherNumber = await generateVoucherNumber(client, companyId, 'receive');
 
-    // 4) السطور (Dr 112 / Cr 112 — صافي صفر)
     const lines = buildCreditApplyLines({
       accounts: { partyAccountId: accounts['112'] },
       amount: amt,
       reference: inv.invoice_number,
     });
 
-    // 5) إنشاء Payment + قيد
     const result = await createPaymentWithJournal(client, companyId, userId, {
       lines,
       entryDate: new Date().toISOString().slice(0, 10),
@@ -677,6 +759,7 @@ const applyCreditToInvoice = async (companyId, userId, payload) => {
       paymentData: {
         invoice_id,
         customer_id: inv.customer_id,
+        cash_register_id: null,
         payment_type: 'credit_apply',
         amount: amt,
         currency_id: inv.currency_id,
@@ -688,7 +771,6 @@ const applyCreditToInvoice = async (companyId, userId, payload) => {
       },
     });
 
-    // 6) تحديث paid_amount
     const updatedInv = await Invoice.updatePaidAmount(client, invoice_id);
 
     await client.query('COMMIT');
@@ -716,7 +798,6 @@ const remove = async (companyId, userId, id) => {
     await client.query('BEGIN');
     transactionStarted = true;
 
-    // 1) قفل الدفعة
     const payRes = await client.query(
       `SELECT * FROM payments WHERE id = $1 AND company_id = $2 FOR UPDATE`,
       [id, companyId]
@@ -724,7 +805,6 @@ const remove = async (companyId, userId, id) => {
     const payment = payRes.rows[0];
     if (!payment) throw new ApiError(404, 'Payment not found');
 
-    // 2) منع الحذف لو لها refunds
     const refunds = await client.query(
       `SELECT 1 FROM payments WHERE refund_of_payment_id = $1 LIMIT 1`,
       [id]
@@ -733,7 +813,6 @@ const remove = async (companyId, userId, id) => {
       throw new ApiError(400, 'Cannot delete payment: has refunds attached');
     }
 
-    // 3) عكس القيد
     if (payment.journal_entry_id) {
       const original = await JournalEntry.findById(companyId, payment.journal_entry_id);
       if (!original) {
@@ -765,7 +844,6 @@ const remove = async (companyId, userId, id) => {
       await JournalEntry.post(client, companyId, reverse.id, userId);
     }
 
-    // 4) حذف الدفعة (مع company_id)
     const del = await client.query(
       `DELETE FROM payments WHERE id = $1 AND company_id = $2 RETURNING id, invoice_id`,
       [id, companyId]

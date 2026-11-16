@@ -8,6 +8,7 @@ const b2bRoutes = require('./b2bRoutes');
 const postsRoutes = require('./postsRoutes');
 const unitsRoutes = require('./unitsRoutes');  
  
+router.use('/cash-registers',                require('./cashRegistersRoutes'));
 router.use('/goods-receipts', require('./goodsReceiptRoutes'));
 router.use('/delivery-notes', require('./deliveryNoteRoutes'));
 router.use('/notes', require('./noteRoutes'));

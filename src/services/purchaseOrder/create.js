@@ -3,6 +3,7 @@ const { pool } = require('../../config/pool');
 const ApiError = require('../../errors/ApiError');
 const NumberingService = require('../numberingService');
 const NotificationService = require('../notificationService');
+const CashRegister = require('../../models/CashRegister');
 const currencyUtil = require('../../utils/currency');
 const { calculateTotals } = require('./helpers/totals');
 const { validatePaymentType, computePaymentAmounts } = require('./helpers/payment');
@@ -60,6 +61,25 @@ const create = async (companyId, userId, payload) => {
 
     const payment = validatePaymentType(payload);
 
+    // تحديد الصندوق النقدي إذا كان الدفع نقداً (cash) ومطلوباً
+    // ✅ تحديد الصندوق النقدي إذا كان الدفع نقداً (cash) أو مُرِّر صراحةً
+    let resolvedCashRegisterId = payload.cash_register_id || null;
+    if (
+      (payment.payment_type === 'cash' || payment.payment_type === 'partial') &&
+      (payment.payment_method || 'cash') === 'cash'
+    ) {
+      const resolved = await CashRegister.resolveAccount(client, companyId, {
+        cash_register_id: resolvedCashRegisterId,
+        branch_id: payload.user_branch_id || null,
+      });
+      resolvedCashRegisterId = resolved.id;
+    } else if (resolvedCashRegisterId) {
+      const resolved = await CashRegister.resolveAccount(client, companyId, {
+        cash_register_id: resolvedCashRegisterId,
+      });
+      resolvedCashRegisterId = resolved.id;
+    }
+
     const totals = await calculateTotals(client, {
       companyId, supplierCompanyId, isNetwork,
       items: payload.items, invoiceDiscountRate,
@@ -74,16 +94,16 @@ const create = async (companyId, userId, payload) => {
 
     const orderResult = await client.query(
       `INSERT INTO purchase_orders (
-         company_id, supplier_id, supplier_company_id, order_number, order_date,
+         company_id, supplier_id, supplier_company_id, cash_register_id, order_number, order_date,
          currency_id, exchange_rate, subtotal, discount_rate, discount_amount, tax_total, total,
          status, created_by, payment_type, payment_method, payment_terms_days, due_date,
          paid_amount, paid_at, supplier_invoice_number, supplier_invoice_date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
-       RETURNING id, company_id, supplier_id, supplier_company_id, order_number, order_date,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+       RETURNING id, company_id, supplier_id, supplier_company_id, cash_register_id, order_number, order_date,
                  currency_id, exchange_rate, subtotal, discount_rate, discount_amount, tax_total, total,
                  status, payment_type, payment_method, payment_terms_days, due_date,
                  paid_amount, paid_at, supplier_invoice_number, supplier_invoice_date`,
-      [companyId, payload.supplier_id, supplierCompanyId, orderNumber, orderDate,
+      [companyId, payload.supplier_id, supplierCompanyId, resolvedCashRegisterId, orderNumber, orderDate,
        payload.currency_id, exchangeRate, totals.subtotal, invoiceDiscountRate, totals.discount_amount,
        totals.tax_total, totals.total, initialStatus, userId,
        paymentComputed.payment_type, paymentComputed.payment_method, paymentComputed.payment_terms_days,

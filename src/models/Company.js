@@ -203,15 +203,33 @@ static async canChangeCurrency(companyId) {
 }
 
   static async changeCurrency(id, newCurrencyId) {
-    const r = await pool.query(
-      `UPDATE companies SET currency_id = $1, updated_at = NOW()
-       WHERE id = $2
-       RETURNING id, currency_id, updated_at`,
-      [newCurrencyId, id]
-    );
-    return r.rows[0] || null;
-  }
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
 
+      const r = await client.query(
+        `UPDATE companies SET currency_id = $1, updated_at = NOW()
+         WHERE id = $2
+         RETURNING id, currency_id, updated_at`,
+        [newCurrencyId, id]
+      );
+
+      // تحديث عملة الصناديق النقدية للشركة (بما أنه لا توجد حركات مالية مسبقة)
+      await client.query(
+        `UPDATE cash_registers SET currency_id = $1
+         WHERE company_id = $2`,
+        [newCurrencyId, id]
+      );
+
+      await client.query('COMMIT');
+      return r.rows[0] || null;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
   static async upsertBranding(companyId, { logo_url, use_shared_logo }, client = pool) {
     const r = await client.query(
       `UPDATE companies

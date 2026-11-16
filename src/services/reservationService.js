@@ -152,7 +152,7 @@ class ReservationService {
    *
    * - يخصم من product_batches.quantity
    * - يتحقق من rowCount لمنع race conditions
-   * - يسجّل stock_movements بـ reference_type = 'sale'
+   * - يسجّل stock_movements بـ reference_type = 'sales'
    *
    * ✅ FIX #4: يتحقق من صلاحية الدفعات قبل الاستهلاك.
    *    إذا كانت هناك دفعة منتهية → يرفض برسالة واضحة.
@@ -220,7 +220,7 @@ class ReservationService {
         `INSERT INTO stock_movements
            (company_id, warehouse_id, batch_id, movement_type, quantity, unit_cost,
             reference_type, reference_id, movement_date, created_by)
-         VALUES ($1, $2, $3, 'out', $4, $5, 'sale', $6, $7, $8)`,
+         VALUES ($1, $2, $3, 'out', $4, $5, 'sales', $6, $7, $8)`,
         [
           res.company_id,
           res.warehouse_id,

@@ -80,16 +80,7 @@ function computePaymentAmounts(payment, total, orderDate) {
 }
 
 /* ============================================================
- * 3) تنفيذ الدفع عند confirm
- *
- * القرارات:
- * - payments.amount = بالعملة الأصلية (order.currency_id)
- * - journal_entry_lines.debit/credit = بالعملة الأساسية (company)
- * - invoices.total = بالعملة الأصلية (متوافق مع payments.amount)
- *
- * إرجاع:
- * - paid_amount (أساسية) — للتوافق مع confirm.js
- * - paid_amount_original (أصلية) — للتوافق مع purchase_orders.paid_amount
+ * 3) تنفيذ الدفع عند confirm (مع ربط الصناديق النقدية)
  * ============================================================ */
 async function handlePayment(client, {
   order,
@@ -104,7 +95,6 @@ async function handlePayment(client, {
   const totalOriginal = round2(Number(order.total) || 0);
   const totalBase = round2(totalOriginal * rate);
 
-  // آجل — لا دفعة
   if (type === 'credit') {
     return {
       type,
@@ -115,7 +105,6 @@ async function handlePayment(client, {
     };
   }
 
-  // حساب المبلغ بالعملتين
   let paidAmountOriginal = 0;
   let paidAmountBase = 0;
 
@@ -145,7 +134,14 @@ async function handlePayment(client, {
   const method = order.payment_method || 'cash';
   const entryDate = new Date().toISOString().slice(0, 10);
 
-  // ═══ 1) دفعة المشتري (صادرة) ═══
+  // ═══ 1) دفعة المشتري (صادرة من الصندوق المحدد أو الافتراضي) ═══
+  const buyerCashInfo = await getCashAccount(
+    client,
+    companyId,
+    method,
+    order.cash_register_id || null
+  );
+
   const buyerVoucher = await NumberingService.next(client, companyId, 'payment_pay', {
     prefix: 'PAY', pad: 4, resetYearly: true,
   });
@@ -153,24 +149,24 @@ async function handlePayment(client, {
   const buyerPayment = await client.query(
     `INSERT INTO payments
        (company_id, payment_type, amount, currency_id, payment_date, method, reference,
-        created_by, voucher_number, supplier_id, invoice_id)
-     VALUES ($1, 'pay', $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9)
+        created_by, voucher_number, supplier_id, invoice_id, cash_register_id)
+     VALUES ($1, 'pay', $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10)
      RETURNING id`,
     [
       companyId,
-      paidAmountOriginal,      // ✅ بالعملة الأصلية
-      order.currency_id,       // ✅ متوافق
+      paidAmountOriginal,
+      order.currency_id,
       method,
       order.order_number,
       userId,
       buyerVoucher,
       order.supplier_id,
       purchaseInvoiceId || null,
+      buyerCashInfo.cashRegisterId,
     ]
   );
   const paymentId = buyerPayment.rows[0].id;
 
-  // ═══ قيد المشتري (بالعملة الأساسية) ═══
   const buyerAccounts = await getBuyerAccounts(client, companyId);
   const buyerEntryId = await createCashPaymentJournal(client, {
     companyId,
@@ -178,8 +174,8 @@ async function handlePayment(client, {
     entryDate,
     amount: paidAmountBase,
     partyAccountId: buyerAccounts.payable,
-    cashAccountId: await getCashAccount(client, companyId, method),
-    method,
+    cashAccountId: buyerCashInfo.accountId,
+    cashLabel: buyerCashInfo.label,
     description: `دفعة أمر شراء ${order.order_number}`,
     isOutgoing: true,
     sourceType: 'purchase_payment',
@@ -198,8 +194,10 @@ async function handlePayment(client, {
     });
   }
 
-  // ═══ 2) دفعة المورد (واردة) — للشبكة ═══
+  // ═══ 2) دفعة المورد (واردة إلى صندوق المورد الافتراضي) — للشبكة ═══
   if (supplierCompanyId) {
+    const supplierCashInfo = await getCashAccount(client, supplierCompanyId, method, null);
+
     const customerId = await ensureCustomer(client, {
       supplierCompanyId,
       buyerCompanyId: order.company_id,
@@ -212,12 +210,12 @@ async function handlePayment(client, {
     const supplierPayment = await client.query(
       `INSERT INTO payments
          (company_id, payment_type, amount, currency_id, payment_date, method, reference,
-          created_by, voucher_number, customer_id, invoice_id)
-       VALUES ($1, 'receive', $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9)
+          created_by, voucher_number, customer_id, invoice_id, cash_register_id)
+       VALUES ($1, 'receive', $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id`,
       [
         supplierCompanyId,
-        paidAmountOriginal,      // ✅ بالعملة الأصلية
+        paidAmountOriginal,
         order.currency_id,
         method,
         order.order_number,
@@ -225,6 +223,7 @@ async function handlePayment(client, {
         supplierVoucher,
         customerId,
         salesInvoiceId || null,
+        supplierCashInfo.cashRegisterId,
       ]
     );
     const supplierPaymentId = supplierPayment.rows[0].id;
@@ -236,8 +235,8 @@ async function handlePayment(client, {
       entryDate,
       amount: paidAmountBase,
       partyAccountId: supplierAccounts.receivable,
-      cashAccountId: await getCashAccount(client, supplierCompanyId, method),
-      method,
+      cashAccountId: supplierCashInfo.accountId,
+      cashLabel: supplierCashInfo.label,
       description: `دفعة واردة لأمر شراء ${order.order_number}`,
       isOutgoing: false,
       sourceType: 'sales_payment',
@@ -259,20 +258,13 @@ async function handlePayment(client, {
 
   return {
     type,
-    paid_amount: paidAmountBase,              // بالعملة الأساسية
-    paid_amount_original: paidAmountOriginal, // بالعملة الأصلية
+    paid_amount: paidAmountBase,
+    paid_amount_original: paidAmountOriginal,
     paid_at: paidAt,
     payment_id: paymentId,
   };
 }
 
-/* ============================================================
- * 4) تحديث invoices.paid_amount + status
- *
- * - paidAmountOriginal بالعملة الأصلية (متوافق مع invoices.total)
- * - FOR UPDATE لمنع race condition
- * - LEAST لمنع تجاوز total
- * ============================================================ */
 async function updateInvoicePaidAmount(client, { invoiceId, paidAmountOriginal }) {
   const lock = await client.query(
     `SELECT id, total FROM invoices WHERE id = $1 FOR UPDATE`,
@@ -299,12 +291,6 @@ async function updateInvoicePaidAmount(client, { invoiceId, paidAmountOriginal }
   );
 }
 
-/* ============================================================
- * 5) قيد صندوق/بنك
- *
- * ⚠️ amount بالعملة الأساسية (company)
- * ⚠️ يقفل القيد إن وُجد (لا يوجد قيد)
- * ============================================================ */
 async function createCashPaymentJournal(client, {
   companyId,
   userId,
@@ -312,6 +298,7 @@ async function createCashPaymentJournal(client, {
   amount,
   partyAccountId,
   cashAccountId,
+  cashLabel = 'صندوق/بنك',
   description,
   isOutgoing,
   sourceType,
@@ -328,10 +315,10 @@ async function createCashPaymentJournal(client, {
   const lines = isOutgoing
     ? [
         { account_id: partyAccountId, debit: amountNum, credit: 0, description },
-        { account_id: cashAccountId, debit: 0, credit: amountNum, description: 'صندوق/بنك' },
+        { account_id: cashAccountId, debit: 0, credit: amountNum, description: cashLabel },
       ]
     : [
-        { account_id: cashAccountId, debit: amountNum, credit: 0, description: 'صندوق/بنك' },
+        { account_id: cashAccountId, debit: amountNum, credit: 0, description: cashLabel },
         { account_id: partyAccountId, debit: 0, credit: amountNum, description },
       ];
 

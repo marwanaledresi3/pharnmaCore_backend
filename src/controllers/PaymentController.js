@@ -1,3 +1,4 @@
+// controllers/PaymentController.js
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../errors/ApiError');
 const Payment = require('../models/Payment');
@@ -13,14 +14,12 @@ const list = asyncHandler(async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /payments
-//
-// يوجّه الطلب إلى الدالة المناسبة:
-//   1) بدون invoice_id → سند يدوي (createManualPayment)
-//   2) invoice_id + payment_type='pay' → فاتورة شراء (createForPurchaseInvoice)
-//   3) invoice_id + payment_type='receive' → فاتورة بيع (createForInvoice)
 // ═══════════════════════════════════════════════════════════════════════════
 const create = asyncHandler(async (req, res) => {
-  const body = req.body;
+  const body = {
+    ...req.body,
+    user_branch_id: req.user.branch_id || null,
+  };
 
   // ─── 1) سند يدوي (بدون فاتورة) ─────────────────────────────────────
   if (!body.invoice_id) {
@@ -83,7 +82,10 @@ const refundToCustomer = asyncHandler(async (req, res) => {
   const result = await service.refundToCustomer(
     req.user.company_id,
     req.user.id,
-    req.body
+    {
+      ...req.body,
+      user_branch_id: req.user.branch_id || null,
+    }
   );
   res.status(201).json({ success: true, data: result });
 });

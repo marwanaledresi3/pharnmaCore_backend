@@ -179,6 +179,7 @@ router.post(
     body('exchange_rate').optional().isFloat({ gt: 0 }),
     body('payment_type').optional().isIn(PAYMENT_TYPES),
     body('payment_method').optional().isIn(PAYMENT_METHODS),
+    body('cash_register_id').optional({ nullable: true }).isUUID(),
     body('paid_amount').optional().isFloat({ min: 0 }),
     body('paid_amount').custom((value, { req }) => {
       if (req.body.payment_type === 'partial') {
@@ -243,6 +244,7 @@ router.post(
     param('id').isUUID(),
     body('amount').optional().isFloat({ gt: 0 }),
     body('method').optional().isIn(PAYMENT_METHODS),
+    body('cash_register_id').optional({ nullable: true }).isUUID(),
     body('payment_date').optional().isISO8601(),
   ],
   validate,

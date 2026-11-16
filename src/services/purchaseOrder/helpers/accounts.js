@@ -1,5 +1,6 @@
 // services/purchaseOrder/helpers/accounts.js
 const ApiError = require('../../../errors/ApiError');
+const CashRegister = require('../../../models/CashRegister');
 
 const CODES = {
   cash_box: '1111',
@@ -31,20 +32,42 @@ async function getSupplierAccounts(client, companyId) {
   });
 }
 
-async function getCashAccount(client, companyId, method = 'cash') {
+/**
+ * تحديد الحساب النقدي/البنكي + cash_register_id
+ * إذا كانت طريقة الدفع نقدية ('cash'):
+ *   يستخدم الصندوق المحدد أو صندوق الفرع أو الصندوق الافتراضي للشركة عبر CashRegister.resolveAccount
+ * وإلا (بنك / شيك / بطاقة / محفظة):
+ *   يستخدم حساب البنك 1112
+ */
+async function getCashAccount(client, companyId, method = 'cash', cashRegisterId = null, branchId = null) {
   const m = String(method || 'cash').toLowerCase();
   const useBank = ['bank', 'cheque', 'card', 'wallet'].includes(m);
-  const code = useBank ? CODES.bank : CODES.cash_box;
+
+  if (!useBank) {
+    const resolved = await CashRegister.resolveAccount(client, companyId, {
+      cash_register_id: cashRegisterId,
+      branch_id: branchId,
+    });
+    return {
+      accountId: resolved.account_id,
+      cashRegisterId: resolved.id,
+      label: resolved.name,
+    };
+  }
 
   const r = await client.query(
-    `SELECT id FROM chart_of_accounts WHERE company_id = $1 AND code = $2 AND is_active = TRUE LIMIT 1`,
-    [companyId, code]
+    `SELECT id, name FROM chart_of_accounts WHERE company_id = $1 AND code = $2 AND is_active = TRUE LIMIT 1`,
+    [companyId, CODES.bank]
   );
 
   if (!r.rowCount) {
-    throw new ApiError(500, `Cash/Bank account ${code} (${useBank ? 'bank' : 'cash'}) not found for company ${companyId}.`);
+    throw new ApiError(500, `Bank account ${CODES.bank} not found for company ${companyId}.`);
   }
-  return r.rows[0].id;
+  return {
+    accountId: r.rows[0].id,
+    cashRegisterId: null,
+    label: r.rows[0].name || 'البنك',
+  };
 }
 
 async function getAccountsByCodes(client, companyId, codes) {

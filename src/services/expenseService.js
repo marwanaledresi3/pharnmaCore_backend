@@ -60,6 +60,10 @@ const paymentReferenceForExpense = (expenseId) => `EXP:${expenseId}`;
 // 1) إنشاء مصروف — محصّن
 // ═══════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════
+// 1) إنشاء مصروف — محصّن ومرتبط بالصناديق النقدية
+// ═══════════════════════════════════════════════════════════════
+
 const create = async (companyId, userId, payload) => {
   const client = await pool.connect();
   let transactionStarted = false;
@@ -126,15 +130,10 @@ const create = async (companyId, userId, payload) => {
     const expenseDate = payload.expense_date || (await todayDb(client));
     const dueDate = payload.due_date || (isCredit ? addDays(expenseDate, 30) : null);
 
-    // 8) رقم المصروف — ✅ من settings (بدون تجاوز)
+    // 8) رقم المصروف — من settings
     const expenseNumber = await NumberingService.next(client, companyId, 'expense');
 
-    // 9) الحسابات (إجبارية)
-    const requiredCodes = [];
-    if (paidAmount > 0) requiredCodes.push('1111');  // صندوق مؤقتاً — سيُستبدل
-    if (isCredit) requiredCodes.push('211');         // ذمم موردين
-
-    // ⚠️ نستخدم requireActiveAccounts لحساب الذمم (إن وُجد)
+    // 9) حساب الذمم (إن وُجد)
     let payableAccountId = null;
     if (isCredit) {
       const accs = await requireActiveAccounts(
@@ -148,13 +147,23 @@ const create = async (companyId, userId, payload) => {
     const paidBase = round2(paidAmount * finalRate);
     const creditBase = round2(amountBase - paidBase);
 
-    // ✅ بناء السطور
+    const method = payload.payment_method || 'cash';
+    let paymentSource = { accountId: null, registerId: null };
+
+    if (paidBase > 0) {
+      paymentSource = await resolvePaymentSource(
+        client,
+        companyId,
+        method,
+        method === 'cash' ? (payload.cash_register_id || null) : null
+      );
+    }
+
+    // بناء السطور
     const lines = buildExpenseLines({
       accounts: {
         expenseAccountId,
-        cashAccountId: paidBase > 0
-          ? await findCashAccount(client, companyId, payload.payment_method || 'cash')
-          : null,
+        cashAccountId: paymentSource.accountId,
         payableAccountId,
       },
       amountBase,
@@ -163,7 +172,7 @@ const create = async (companyId, userId, payload) => {
       description: payload.description,
     });
 
-    // ✅ التحقق من التوازن
+    // التحقق من التوازن
     assertBalanced(lines, 'في المصروف');
 
     // 11) الحالة
@@ -184,7 +193,8 @@ const create = async (companyId, userId, payload) => {
       currency_id: payload.currency_id,
       exchange_rate: finalRate,
       payment_type: paymentType,
-      payment_method: payload.payment_method || null,
+      payment_method: paymentType !== 'credit' ? method : null,
+      cash_register_id: paymentSource.registerId,
       paid_amount: paidAmount,
       due_date: dueDate,
       status,
@@ -192,6 +202,14 @@ const create = async (companyId, userId, payload) => {
       external_reference: payload.external_reference || null,
       created_by: userId,
     });
+
+    // ضمان حفظ cash_register_id في حال لم يكن مدرجاً داخل Expense.create
+    if (paymentSource.registerId) {
+      await client.query(
+        `UPDATE expenses SET cash_register_id = $1 WHERE id = $2 AND company_id = $3`,
+        [paymentSource.registerId, expense.id, companyId]
+      );
+    }
 
     // 13) القيد
     const entry = await JournalEntry.create(client, companyId, {
@@ -203,10 +221,10 @@ const create = async (companyId, userId, payload) => {
       lines,
     });
 
-    // ✅ verify بعد الإنشاء
+    // verify بعد الإنشاء
     await verifyJournalEntry(client, entry.id, 'في المصروف');
 
-    // 14) ربط (مع company_id)
+    // 14) ربط القيد بالمصروف
     const link = await client.query(
       `UPDATE expenses SET journal_entry_id = $1
        WHERE id = $2 AND company_id = $3
@@ -217,14 +235,26 @@ const create = async (companyId, userId, payload) => {
       throw new ApiError(500, 'فشل ربط القيد بالمصروف');
     }
 
-    // 15) ترحيل
+    // 15) ترحيل القيد
     await JournalEntry.post(client, companyId, entry.id, userId);
+
+    // 16) خصم المبلغ المدفوع نقداً من رصيد الصندوق
+    if (paymentSource.registerId && paidBase > 0) {
+      await client.query(
+        `UPDATE cash_registers
+         SET current_balance = COALESCE(current_balance, 0) - $1,
+             updated_at = NOW()
+         WHERE id = $2 AND company_id = $3`,
+        [paidBase, paymentSource.registerId, companyId]
+      );
+    }
 
     await client.query('COMMIT');
     transactionStarted = false;
 
     return {
       ...expense,
+      cash_register_id: paymentSource.registerId,
       journal_entry_id: entry.id,
       due_date: dueDate,
       paid_amount: paidAmount,
@@ -244,6 +274,10 @@ const create = async (companyId, userId, payload) => {
 // 2) دفع مصروف — محصّن
 // ═══════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════
+// 2) دفع مصروف — محصّن ومرتبط بالصناديق النقدية
+// ═══════════════════════════════════════════════════════════════
+
 const pay = async (companyId, userId, expenseId, payload) => {
   const client = await pool.connect();
   let transactionStarted = false;
@@ -251,7 +285,7 @@ const pay = async (companyId, userId, expenseId, payload) => {
     await client.query('BEGIN');
     transactionStarted = true;
 
-    // 1) قفل
+    // 1) قفل المصروف
     const expRes = await client.query(
       `SELECT * FROM expenses
        WHERE id = $1 AND company_id = $2 AND status IN ('posted', 'partial')
@@ -274,17 +308,24 @@ const pay = async (companyId, userId, expenseId, payload) => {
     const paymentDate = payload.payment_date || (await todayDb(client));
     const method = payload.method || exp.payment_method || 'bank';
 
-    // 4) الحسابات (إجبارية)
+    // 4) الحسابات (إجبارية) + تحديد الصندوق
     const accounts = await requireActiveAccounts(
       client, companyId, ['211'], 'في دفع المصروف'
     );
     const payableAccountId = accounts['211'];
-    const cashAccountId = await findCashAccount(client, companyId, method);
+
+    const paymentSource = await resolvePaymentSource(
+      client,
+      companyId,
+      method,
+      method === 'cash' ? (payload.cash_register_id || null) : null
+    );
+    const cashAccountId = paymentSource.accountId;
 
     const rate = Number(exp.exchange_rate) || 1;
     const amountBase = round2(amt * rate);
 
-    // 5) رقم السند — ✅ من settings
+    // 5) رقم السند — من settings
     const voucherNumber = await NumberingService.next(
       client, companyId, 'payment_voucher'
     );
@@ -298,26 +339,26 @@ const pay = async (companyId, userId, expenseId, payload) => {
 
     assertBalanced(lines, 'في دفع المصروف');
 
-    // 7) ✅ إنشاء القيد أولاً (قبل Payment)
+    // 7) إنشاء القيد أولاً (قبل Payment)
     const entry = await JournalEntry.create(client, companyId, {
       entry_date: paymentDate,
       description: `دفع مصروف ${exp.expense_number}`,
       source_type: 'payment',
-      source_id: null, // سيُحدَّث
+      source_id: null,
       created_by: userId,
       lines,
     });
 
-    // ✅ verify بعد الإنشاء
+    // verify بعد الإنشاء
     await verifyJournalEntry(client, entry.id, 'في دفع المصروف');
 
-    // 8) إنشاء Payment (بعد القيد)
+    // 8) إنشاء Payment (بعد القيد) مع cash_register_id
     const paymentInsert = await client.query(
       `INSERT INTO payments
          (company_id, payment_type, amount, currency_id, payment_date, method,
           reference, created_by, voucher_number, supplier_id, description,
-          journal_entry_id)
-       VALUES ($1, 'pay', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          journal_entry_id, cash_register_id)
+       VALUES ($1, 'pay', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING id`,
       [
         companyId, amt, exp.currency_id, paymentDate, method,
@@ -325,11 +366,12 @@ const pay = async (companyId, userId, expenseId, payload) => {
         userId, voucherNumber, exp.supplier_id,
         `دفع مصروف ${exp.expense_number}`,
         entry.id,
+        paymentSource.registerId,
       ]
     );
     const paymentId = paymentInsert.rows[0].id;
 
-    // 9) ربط القيد بالدفعة (مع company_id)
+    // 9) ربط القيد بالدفعة
     const link = await client.query(
       `UPDATE journal_entries SET source_id = $1
        WHERE id = $2 AND company_id = $3
@@ -340,7 +382,7 @@ const pay = async (companyId, userId, expenseId, payload) => {
       throw new ApiError(500, 'فشل ربط القيد بالدفعة');
     }
 
-    // 10) تحديث المصروف (مع company_id + status + RETURNING)
+    // 10) تحديث المصروف
     const newPaid = round2(Number(exp.paid_amount || 0) + amt);
     const newStatus = newPaid >= Number(exp.amount) - 0.01 ? 'paid' : 'partial';
 
@@ -355,8 +397,19 @@ const pay = async (companyId, userId, expenseId, payload) => {
       throw new ApiError(409, 'فشل تحديث المصروف — قد يكون معدّلاً من عملية أخرى');
     }
 
-    // 11) ترحيل
+    // 11) ترحيل القيد
     await JournalEntry.post(client, companyId, entry.id, userId);
+
+    // 12) خصم المبلغ من رصيد الصندوق عند الدفع نقداً
+    if (paymentSource.registerId && amountBase > 0) {
+      await client.query(
+        `UPDATE cash_registers
+         SET current_balance = COALESCE(current_balance, 0) - $1,
+             updated_at = NOW()
+         WHERE id = $2 AND company_id = $3`,
+        [amountBase, paymentSource.registerId, companyId]
+      );
+    }
 
     await client.query('COMMIT');
     transactionStarted = false;
@@ -367,6 +420,7 @@ const pay = async (companyId, userId, expenseId, payload) => {
       paid_amount: newPaid,
       payment_id: paymentId,
       journal_entry_id: entry.id,
+      cash_register_id: paymentSource.registerId,
     };
   } catch (err) {
     if (transactionStarted) {
@@ -381,6 +435,10 @@ const pay = async (companyId, userId, expenseId, payload) => {
 
 // ═══════════════════════════════════════════════════════════════
 // 3) إلغاء مصروف — محصّن
+// ═══════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════
+// 3) إلغاء مصروف — محصّن مع إعادة الأرصدة للصناديق النقدية
 // ═══════════════════════════════════════════════════════════════
 
 const cancel = async (companyId, userId, expenseId) => {
@@ -403,11 +461,13 @@ const cancel = async (companyId, userId, expenseId) => {
       throw new ApiError(400, 'لا يمكن إلغاء مصروف مدفوع بالكامل — استخدم الاسترداد');
     }
 
+    const rate = Number(exp.exchange_rate) || 1;
+
     // 3a) عكس القيد الأصلي
     if (exp.journal_entry_id) {
       const original = await JournalEntry.findById(companyId, exp.journal_entry_id);
       if (!original) {
-        throw new ApiError(409, `Cannot cancel: original journal entry not found`);
+        throw new ApiError(409, 'Cannot cancel: original journal entry not found');
       }
       if (!Array.isArray(original.lines) || original.lines.length === 0) {
         throw new ApiError(409, 'Cannot cancel: original journal entry has no lines');
@@ -435,13 +495,15 @@ const cancel = async (companyId, userId, expenseId) => {
       await JournalEntry.post(client, companyId, reverse.id, userId);
     }
 
-    // 3b) عكس قيود الدفعات المرتبطة
+    // 3b) عكس قيود الدفعات المرتبطة وإعادة أرصدتها للصناديق
     const paymentsRes = await client.query(
-      `SELECT journal_entry_id FROM payments
+      `SELECT journal_entry_id, cash_register_id, amount FROM payments
        WHERE company_id = $1 AND reference = $2
          AND journal_entry_id IS NOT NULL`,
       [companyId, paymentReferenceForExpense(expenseId)]
     );
+
+    let refundedFromPaymentsBase = 0;
 
     for (const p of paymentsRes.rows) {
       const original = await JournalEntry.findById(companyId, p.journal_entry_id);
@@ -467,9 +529,36 @@ const cancel = async (companyId, userId, expenseId) => {
 
       await verifyJournalEntry(client, reverse.id, 'في عكس دفعة المصروف');
       await JournalEntry.post(client, companyId, reverse.id, userId);
+
+      const pBase = round2(Number(p.amount || 0) * rate);
+      refundedFromPaymentsBase = round2(refundedFromPaymentsBase + pBase);
+
+      if (p.cash_register_id && pBase > 0) {
+        await client.query(
+          `UPDATE cash_registers
+           SET current_balance = COALESCE(current_balance, 0) + $1,
+               updated_at = NOW()
+           WHERE id = $2 AND company_id = $3`,
+          [pBase, p.cash_register_id, companyId]
+        );
+      }
     }
 
-    // 3c) تحديث الحالة (مع company_id + status + RETURNING)
+    // 3c) إعادة الدفعة المقدمة (في حال المصروف الجزئي) إلى الصندوق الأصلي
+    const totalPaidBase = round2(Number(exp.paid_amount || 0) * rate);
+    const initialPaidBase = round2(Math.max(0, totalPaidBase - refundedFromPaymentsBase));
+
+    if (exp.cash_register_id && initialPaidBase > 0) {
+      await client.query(
+        `UPDATE cash_registers
+         SET current_balance = COALESCE(current_balance, 0) + $1,
+             updated_at = NOW()
+         WHERE id = $2 AND company_id = $3`,
+        [initialPaidBase, exp.cash_register_id, companyId]
+      );
+    }
+
+    // 3d) تحديث الحالة
     const upd = await client.query(
       `UPDATE expenses
        SET status = 'cancelled'
@@ -544,4 +633,54 @@ const remove = async (companyId, userId, expenseId) => {
   }
 };
 
+/**
+ * ✅ حساب الصندوق/البنك — يدعم الصناديق النقدية المخصصة + fallback للإعدادات والحساب 1111/1112
+ */
+async function resolvePaymentSource(client, companyId, method, cashRegisterId = null) {
+  const isBank = method === 'bank' || method === 'cheque';
+
+  // 1) إذا كانت الطريقة نقداً وتم تحديد صندوق نقدي
+  if (!isBank && cashRegisterId) {
+    const regRes = await client.query(
+      `SELECT id, account_id, is_active
+       FROM cash_registers
+       WHERE id = $1 AND company_id = $2
+       FOR UPDATE`,
+      [cashRegisterId, companyId]
+    );
+    if (!regRes.rowCount) {
+      throw new ApiError(404, 'الصندوق النقدي المحدد غير موجود');
+    }
+    const reg = regRes.rows[0];
+    if (!reg.is_active) {
+      throw new ApiError(400, 'الصندوق النقدي المحدد موقوف');
+    }
+    if (!reg.account_id) {
+      throw new ApiError(400, 'الصندوق النقدي غير مرتبط بحساب محاسبي');
+    }
+    return { accountId: reg.account_id, registerId: reg.id };
+  }
+
+  // 2) الإعدادات العامة (payment_bank_account_id / payment_cash_account_id)
+  const settingsKey = isBank ? 'payment_bank_account_id' : 'payment_cash_account_id';
+  const accountId = await settingsService.get(companyId, settingsKey, null, client);
+  if (accountId) {
+    const check = await client.query(
+      `SELECT id FROM chart_of_accounts
+       WHERE id = $1 AND company_id = $2 AND is_active = TRUE`,
+      [accountId, companyId]
+    );
+    if (check.rowCount) {
+      return { accountId, registerId: null };
+    }
+    console.warn(`[expenseService] settings.${settingsKey}=${accountId} is invalid — fallback`);
+  }
+
+  // 3) الحساب الافتراضي 1111 أو 1112
+  const code = isBank ? '1112' : '1111';
+  const accounts = await requireActiveAccounts(
+    client, companyId, [code], `في حساب ${isBank ? 'البنك' : 'الصندوق'}`
+  );
+  return { accountId: accounts[code], registerId: null };
+}
 module.exports = { create, pay, cancel, remove };

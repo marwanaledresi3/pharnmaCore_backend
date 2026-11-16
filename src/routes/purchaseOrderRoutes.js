@@ -35,6 +35,7 @@ const QR_MODES = ['authenticated', 'public', 'both'];
 const createRules = [
   body('supplier_id').isUUID(),
   body('currency_id').isUUID(),
+  body('cash_register_id').optional({ nullable: true }).isUUID(),
   body('order_date').optional().isISO8601(),
   body('exchange_rate').optional().isFloat({ gt: 0 }),
   body('payment_type').optional().isIn(PAYMENT_TYPES),
@@ -80,6 +81,7 @@ const listRules = [
   query('status').optional().isIn(STATUSES),
   query('supplier_id').optional().isUUID(),
   query('supplier_company_id').optional().isUUID(),
+  body('cash_register_id').optional({ nullable: true }).isUUID(),
   query('date_from').optional().isISO8601(),
   query('date_to').optional().isISO8601(),
   query('payment_type').optional().isIn(PAYMENT_TYPES),
