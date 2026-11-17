@@ -28,16 +28,41 @@ const create = asyncHandler(async (req, res) => {
 });
 
 const confirm = asyncHandler(async (req, res) => {
-  const result = await service.confirm(
-    req.user.company_id,
-    req.user.id,
-    req.params.id,
-    {
-      deliveryToken: req.body?.delivery_token,
-      usedMode: req.body?.used_mode,
-    }
-  );
-  res.json({ success: true, data: result });
+  try {
+    const result = await service.confirm(
+      req.user.company_id,
+      req.user.id,
+      req.params.id,
+      {
+        deliveryToken: req.body?.delivery_token,
+        usedMode: req.body?.used_mode,
+      }
+    );
+
+    res.json({ success: true, data: result });
+
+  } catch (err) {
+    // ─── طباعة تفاصيل الخطأ كاملة ───
+    console.error('err     :', err);
+
+
+    // ─── رجّع تفاصيل الخطأ للعميل (مؤقتاً للتشخيص) ───
+    res.status(err.statusCode || 500).json({
+      success: false,
+      message: err.message || 'فشل تأكيد الطلب',
+      error: {
+        name:       err.name,
+        code:       err.code,
+        detail:     err.detail,
+        hint:       err.hint,
+        constraint: err.constraint,
+        table:      err.table,
+        where:      err.where,
+      },
+      // احذف هذا الجزء في الإنتاج
+      stack: process.env.NODE_ENV !== 'production' ? err.stack : undefined,
+    });
+  }
 });
 
 const cancel = asyncHandler(async (req, res) => {

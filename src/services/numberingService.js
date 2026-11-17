@@ -187,6 +187,52 @@ class NumberingService {
     const padded = String(nextVal).padStart(pad, '0');
     return prefix ? `${prefix}${padded}` : padded;
   }
+   /**
+ * يولّد الرقم التالي ويرجّع القيمة الرقمية + المعروضة معاً (ذرّي).
+ * @returns {Promise<{ value: number, display: string }>}
+ */
+static async nextRaw(client, companyId, seqName, opts = {}) {
+  let defaults;
+  if (opts.prefix === undefined || opts.pad === undefined || opts.resetYearly === undefined) {
+    defaults = await this._getDefaults(client, companyId, seqName);
+  }
+
+  const {
+    prefix = defaults?.prefix ?? '',
+    pad = defaults?.pad ?? 4,
+    start = 1,
+    resetYearly = defaults?.resetYearly ?? false,
+  } = opts;
+
+  const effectiveSeqName = resetYearly
+    ? `${seqName}_${new Date().getFullYear()}`
+    : seqName;
+
+  await client.query(
+    `INSERT INTO company_sequences (company_id, seq_name, next_value)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (company_id, seq_name) DO NOTHING`,
+    [companyId, effectiveSeqName, start]
+  );
+
+  const upd = await client.query(
+    `UPDATE company_sequences
+     SET next_value = next_value + 1
+     WHERE company_id = $1 AND seq_name = $2
+     RETURNING next_value - 1 AS current`,
+    [companyId, effectiveSeqName]
+  );
+
+  if (!upd.rowCount) {
+    throw new ApiError(500, `Failed to allocate sequence ${effectiveSeqName}`);
+  }
+
+  const value = Number(upd.rows[0].current);
+  const padded = String(value).padStart(pad, '0');
+  const display = prefix ? `${prefix}${padded}` : padded;
+
+  return { value, display };
+}
 }
 
 module.exports = NumberingService;

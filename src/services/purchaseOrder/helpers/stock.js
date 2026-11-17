@@ -1,6 +1,6 @@
 // services/purchaseOrder/helpers/stock.js
 const ApiError = require('../../../errors/ApiError');
-
+// const { formatDate } = require('../../../utils/dateUtils');
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 async function checkSupplierStockAvailability(client, { orderId, supplierCompanyId }) {
@@ -61,6 +61,7 @@ async function confirmInventory(client, { order, buyerCompanyId, supplierCompany
 
   if (itemsRes.rowCount === 0) throw new ApiError(500, 'Order has no items');
 
+  
   const buyerWarehouseId = await getDefaultWarehouse(client, buyerCompanyId, 'buyer');
   const rate = Number(order.exchange_rate) || 1;
 
@@ -191,15 +192,60 @@ function resolveBatchNumber(item, order) {
 }
 
 function resolveExpiryDate(item) {
-  if (item.expiry_date) {
-    const expiryDate = new Date(item.expiry_date);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (expiryDate < today) throw new ApiError(400, `Expiry date is in the past for item ${item.id}`);
-    return item.expiry_date;
+  if (!item.expiry_date) {
+    return '2099-12-31';
   }
-  return '2099-12-31';
+
+  // 1) استخرج 'YYYY-MM-DD' نصياً (بدون أي Date object!)
+  const expiryStr = extractISODate(item.expiry_date);
+  if (!expiryStr) {
+    throw new ApiError(400,
+      `Invalid expiry_date for item ${item.id}: ${item.expiry_date}`);
+  }
+
+  // 2) today كـ 'YYYY-MM-DD' **بتوقيت UTC** (يتسق مع CURRENT_DATE في DB)
+  const today = new Date();
+  const todayStr =
+    today.getUTCFullYear() + '-' +
+    String(today.getUTCMonth() + 1).padStart(2, '0') + '-' +
+    String(today.getUTCDate()).padStart(2, '0');
+
+  // 3) مقارنة نصية ISO
+  if (expiryStr < todayStr) {
+    throw new ApiError(400,
+      `Expiry date (${expiryStr}) is in the past for item ${item.id} ` +
+      `(today=${todayStr})`);
+  }
+
+  return expiryStr;
 }
+
+// helper: يستخرج 'YYYY-MM-DD' من أي مصدر
+function extractISODate(value) {
+  if (!value) return null;
+
+  // (أ) Date object (نادراً — بعد setTypeParser)
+  if (value instanceof Date) {
+    if (isNaN(value.getTime())) return null;
+    const y = value.getUTCFullYear();
+    const m = String(value.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(value.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  // (ب) string 'YYYY-MM-DD' — الحالة عندك
+  if (typeof value === 'string') {
+    const m = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    // 'DD/MM/YYYY'
+    const m2 = value.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (m2) return `${m2[3]}-${m2[2]}-${m2[1]}`;
+    return null;
+  }
+
+  return null;
+}
+
 
 module.exports = {
   checkSupplierStockAvailability, confirmInventory, getDefaultWarehouse,

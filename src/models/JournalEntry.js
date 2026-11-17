@@ -80,6 +80,7 @@ class JournalEntry {
       `SELECT
          je.id,
          je.entry_number,
+         je.entry_number_display,  
          je.entry_date,
          je.description,
          je.source_type,
@@ -130,7 +131,7 @@ class JournalEntry {
 
     const head = await executor.query(
       `SELECT
-         je.id, je.entry_number, je.entry_date, je.description,
+         je.id, je.entry_number, je.entry_date, je.description, je.entry_number_display,  
          je.source_type, je.source_id, je.status,
          je.created_by, u.name AS created_by_name,
          je.created_at, je.posted_at
@@ -169,6 +170,9 @@ class JournalEntry {
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // CREATE
+  // ═══════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════
   // CREATE
   // ═══════════════════════════════════════════════════════════════
   static async create(client, companyId, {
@@ -257,18 +261,25 @@ class JournalEntry {
       }
     }
 
-    // ═══ 5) رقم القيد ═══
-    const entryNumber = await this.nextNumber(client, companyId);
+    // ═══ 5) رقم القيد — ✅ value=integer, display=string ═══
+    const { value: entryNumber } = await NumberingService.nextRaw(
+      client,
+      companyId,
+      'journal_entry',
+      { prefix: 'JE-', pad: 5 }
+    );
 
-    // ═══ 6) إدراج الرأس ═══
+    // ═══ 6) إدراج الرأس — entry_number_display محسوب تلقائياً (GENERATED) ═══
     const head = await client.query(
       `INSERT INTO journal_entries
-        (company_id, entry_number, entry_date, description, source_type, source_id, created_by, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft')
-       RETURNING id, entry_number, entry_date, description, status, created_at`,
+        (company_id, entry_number, entry_date, description,
+        source_type, source_id, created_by, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft')
+      RETURNING id, entry_number, entry_number_display,
+                entry_date, description, status, created_at`,
       [
         companyId,
-        entryNumber,
+        entryNumber,          // ← integer ✅ (مش "JE-00001")
         entry_date,
         description || null,
         st,

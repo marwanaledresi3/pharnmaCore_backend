@@ -1,7 +1,8 @@
 // // config/db.js
 const { Pool } = require('pg');
 require('dotenv').config();
-
+const { types } = require('pg');
+types.setTypeParser(1082, (val) => val);   // date → string
 const connectionString = process.env.DATABASE_URL;
 
 // كشف تلقائي: SSL فقط للسحابة
