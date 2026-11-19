@@ -33,6 +33,10 @@ const {
   goodsReceipt: generateGoodsReceipt,
   stockTransfer: generateStockTransfer,
   stockAdjustment: generateStockAdjustment,
+  
+  hrReport: generateHrReport,  
+  payslip: generatePayslip,
+  payrollReport: generatePayrollReport,
 } = require('../services/pdf');
 
 // ═══════════════════════════════════════════════════════════════
@@ -968,9 +972,238 @@ const stockAdjustment = asyncHandler(async (req, res) => {
     client.release();
   }
 });
+// ═══════════════════════════════════════════════════════════════
+// 🆕 14) تقرير HR (PDF)
+// ═══════════════════════════════════════════════════════════════
+/**
+ * POST /pdf/hr/report
+ * Body: { title, titleEn, subtitle, headers, rows, summary, notes, currencyCode, landscape, columnTypes, showSignature }
+ */
+const hrReport = asyncHandler(async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const companyId = req.user.company_id;
+
+    const {
+      title,
+      titleEn,
+      subtitle,
+      headers,
+      rows,
+      summary,
+      notes,
+      currencyCode,
+      landscape,
+      columnTypes,
+      showSignature,
+      signatureLeft,
+      signatureRight,
+      filename,
+    } = req.body;
+
+    if (!Array.isArray(headers) || !Array.isArray(rows)) {
+      throw new ApiError(400, 'headers and rows are required arrays');
+    }
+
+    // 1) جلب الشركة
+    const company = await getCompany(client, companyId);
+    const companyData = await companyPdfData(company);
+
+    // 2) توليد PDF (Buffer)
+    const buffer = await generateHrReport({
+      company: companyData,
+      title: title || 'تقرير',
+      titleEn: titleEn || 'HR Report',
+      subtitle,
+      headers,
+      rows,
+      summary: summary || [],
+      notes,
+      currencyCode: currencyCode || 'YER',
+      landscape: landscape !== false,
+      columnTypes: columnTypes || {},
+      showSignature: showSignature === true,
+      signatureLeft,
+      signatureRight,
+    });
+
+    // 3) إرسال الملف
+    const safeFilename = String(filename || `hr-report-${Date.now()}`)
+      .replace(/[^\w\-_\u0600-\u06FF]/g, '_')
+      .slice(0, 100);
+
+    sendPdf(res, buffer, safeFilename);
+  } catch (err) {
+    console.error('[pdf:hrReport] ERROR:', err);
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+
+// ═══════════════════════════════════════════════════════════════
+// 🆕 15) قسيمة راتب موظف (payslip)
+// ═══════════════════════════════════════════════════════════════
+/**
+ * GET /pdf/payslips/:itemId
+ * - يجلب بند المسير + بيانات الموظف + الشركة.
+ * - يولّد قسيمة راتب PDF.
+ */
+const payslip = asyncHandler(async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { itemId } = req.params;
+    const companyId = req.user.company_id;
+
+    // 1) جلب بند المسير + الموظف + المسير
+    const { rows } = await client.query(
+      `SELECT pi.*,
+              e.employee_number, e.full_name, e.iban, e.bank_name,
+              d.name AS department_name,
+              j.name AS job_title_name,
+              pr.run_number, pr.period_year, pr.period_month, pr.payment_date, pr.status
+         FROM payroll_items pi
+         JOIN employees e ON e.id = pi.employee_id
+         JOIN payroll_runs pr ON pr.id = pi.payroll_run_id
+         LEFT JOIN departments d ON d.id = e.department_id
+         LEFT JOIN job_titles  j ON j.id = e.job_title_id
+        WHERE pi.id = $1
+          AND pi.company_id = $2`,
+      [itemId, companyId]
+    );
+    const row = rows[0];
+    if (!row) throw new ApiError(404, 'Payslip not found');
+
+    // 2) جلب الشركة
+    const company = await getCompany(client, companyId);
+    const companyData = await companyPdfData(company);
+
+    const currencyCode = company.currency_code || 'YER';
+
+    // 3) بناء earnings/deductions
+    const earnings = [];
+    if (Number(row.basic_salary) > 0) earnings.push({ label: 'الراتب الأساسي', value: Number(row.basic_salary) });
+    if (Number(row.housing_allowance) > 0) earnings.push({ label: 'بدل السكن', value: Number(row.housing_allowance) });
+    if (Number(row.transport_allowance) > 0) earnings.push({ label: 'بدل النقل', value: Number(row.transport_allowance) });
+    if (Number(row.other_allowances) > 0) earnings.push({ label: 'بدلات أخرى', value: Number(row.other_allowances) });
+    if (Number(row.overtime_amount) > 0) earnings.push({ label: 'العمل الإضافي', value: Number(row.overtime_amount) });
+    if (Number(row.bonus_amount) > 0) earnings.push({ label: 'مكافآت', value: Number(row.bonus_amount) });
+
+    const deductions = [];
+    if (Number(row.absence_deduction) > 0) deductions.push({ label: 'خصم الغياب', value: Number(row.absence_deduction) });
+    if (Number(row.tax_deduction) > 0) deductions.push({ label: 'ضريبة الدخل', value: Number(row.tax_deduction) });
+    if (Number(row.social_insurance) > 0) deductions.push({ label: 'التأمينات الاجتماعية', value: Number(row.social_insurance) });
+    if (Number(row.loan_deduction) > 0) deductions.push({ label: 'خصم السلف', value: Number(row.loan_deduction) });
+    if (Number(row.other_deductions) > 0) deductions.push({ label: 'خصومات أخرى', value: Number(row.other_deductions) });
+
+    // 4) المبلغ بالحروف
+    const amountInWords = `${numToArabicWords(row.net_salary)} ${
+      currencyCode === 'YER' ? 'ريال يمني' : currencyCode
+    } فقط لا غير`;
+
+    // 5) توليد PDF
+    const buffer = await generatePayslip({
+      company: companyData,
+      currencyCode,
+      payslip: {
+        run_number: row.run_number,
+        period_year: row.period_year,
+        period_month: row.period_month,
+        payment_date: row.payment_date ? formatDate(row.payment_date) : '—',
+        amountInWords,
+        employee: {
+          employee_number: row.employee_number,
+          full_name: row.full_name,
+          department_name: row.department_name,
+          job_title_name: row.job_title_name,
+          bank_name: row.bank_name,
+          iban: row.iban,
+        },
+        earnings,
+        deductions,
+        gross_salary: Number(row.gross_salary),
+        total_deductions: Number(row.total_deductions),
+        net_salary: Number(row.net_salary),
+      },
+    });
+
+    sendPdf(res, buffer, `payslip-${row.employee_number}-${row.period_year}-${row.period_month}`);
+  } catch (err) {
+    console.error('[pdf:payslip] ERROR:', err);
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 🆕 16) تقرير مسير رواتب كامل
+// ═══════════════════════════════════════════════════════════════
+/**
+ * GET /pdf/payroll/:runId?includeDetails=true
+ */
+const payrollReport = asyncHandler(async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { runId } = req.params;
+    const companyId = req.user.company_id;
+    const includeDetails = req.query.includeDetails === 'true';
+
+    // 1) جلب المسير
+    const { rows: runRows } = await client.query(
+      `SELECT * FROM payroll_runs WHERE id = $1 AND company_id = $2`,
+      [runId, companyId]
+    );
+    const run = runRows[0];
+    if (!run) throw new ApiError(404, 'Payroll run not found');
+
+    // 2) جلب البنود + الموظفين
+    const { rows: items } = await client.query(
+      `SELECT pi.*, e.employee_number, e.full_name
+         FROM payroll_items pi
+         JOIN employees e ON e.id = pi.employee_id
+        WHERE pi.payroll_run_id = $1
+        ORDER BY e.employee_number`,
+      [runId]
+    );
+
+    // 3) الشركة
+    const company = await getCompany(client, companyId);
+    const companyData = await companyPdfData(company);
+
+    const currencyCode = company.currency_code || 'YER';
+
+    // 4) توليد PDF
+    const buffer = await generatePayrollReport({
+      company: companyData,
+      currencyCode,
+      includeDetails,
+      payrollRun: {
+        run_number: run.run_number,
+        period_year: run.period_year,
+        period_month: run.period_month,
+        payment_date: run.payment_date ? formatDate(run.payment_date) : '—',
+        status: run.status,
+        journal_entry_id: run.journal_entry_id,
+        total_gross: Number(run.total_gross),
+        total_deductions: Number(run.total_deductions),
+        total_net: Number(run.total_net),
+        items,
+      },
+    });
+
+    sendPdf(res, buffer, `payroll-${run.run_number}`);
+  } catch (err) {
+    console.error('[pdf:payrollReport] ERROR:', err);
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
 
 module.exports = {
-  // موجود
   invoice,
   returnDoc,
   payment,
@@ -985,4 +1218,8 @@ module.exports = {
   goodsReceipt,
   stockTransfer,
   stockAdjustment,
+  
+  hrReport,
+  payslip,
+  payrollReport,
 };

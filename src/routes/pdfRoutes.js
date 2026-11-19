@@ -7,7 +7,7 @@ const {
   authorize,
 } = require('../middlewares/authMiddleware');
 const validate = require('../middlewares/validateMiddleware');
-const { param, query } = require('express-validator');
+const { param, query, body } = require('express-validator');
 
 router.use(authenticate, requireCompany);
 
@@ -449,4 +449,154 @@ router.get(
   ctrl.stockAdjustment
 );
 
+// ═══════════════════════════════════════════════════════════════
+// POST /pdf/hr/report — تقرير HR 🆕
+// ═══════════════════════════════════════════════════════════════
+/**
+ * @swagger
+ * /pdf/hr/report:
+ *   post:
+ *     summary: تحميل تقرير HR PDF
+ *     description: |
+ *       يستقبل بيانات التقرير (headers + rows) ويُولّد PDF عربياً.
+ *       يُستخدم من صفحة تقارير HR بعد جلب البيانات من endpoints التقارير.
+ *     tags: [PDF]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [headers, rows]
+ *             properties:
+ *               title: { type: string }
+ *               titleEn: { type: string }
+ *               subtitle: { type: string }
+ *               headers: { type: array, items: { type: string } }
+ *               rows: { type: array, items: { type: object } }
+ *               summary:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     label: { type: string }
+ *                     value: { type: string }
+ *                     isTotal: { type: boolean }
+ *               notes: { type: string }
+ *               currencyCode: { type: string }
+ *               landscape: { type: boolean, default: true }
+ *               columnTypes:
+ *                 type: object
+ *                 additionalProperties:
+ *                   type: string
+ *                   enum: [arabic, text, number, money, date]
+ *               showSignature: { type: boolean }
+ *               signatureLeft: { type: string }
+ *               signatureRight: { type: string }
+ *               filename: { type: string }
+ *     responses:
+ *       200:
+ *         description: ملف PDF
+ *         content:
+ *           application/pdf:
+ *             schema: { type: string, format: binary }
+ *       400:
+ *         description: بيانات غير صالحة
+ */
+router.post(
+  '/hr/report',
+  authorize('reports.export'),
+  [
+    body('headers').isArray({ min: 1 }),
+    body('rows').isArray(),
+    body('title').optional().isString().isLength({ max: 200 }),
+    body('subtitle').optional().isString().isLength({ max: 200 }),
+    body('currencyCode').optional().isString().isLength({ max: 10 }),
+    body('landscape').optional().isBoolean(),
+    body('showSignature').optional().isBoolean(),
+  ],
+  validate,
+  ctrl.hrReport
+);
+
+
+// ═══════════════════════════════════════════════════════════════
+// GET /pdf/payslips/:itemId — قسيمة راتب موظف 🆕
+// ═══════════════════════════════════════════════════════════════
+/**
+ * @swagger
+ * /pdf/payslips/{itemId}:
+ *   get:
+ *     summary: تحميل قسيمة راتب PDF
+ *     description: |
+ *       قسيمة راتب موظف فردي (A5 portrait).
+ *       تشمل: بيانات الموظف، الفترة، الإيرادات، الخصومات، الصافي.
+ *     tags: [PDF]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: itemId
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200:
+ *         description: ملف PDF
+ *         content:
+ *           application/pdf:
+ *             schema: { type: string, format: binary }
+ *       404:
+ *         description: البند غير موجود
+ */
+router.get(
+  '/payslips/:itemId',
+  authorize('payroll.view'),
+  [param('itemId').isUUID()],
+  validate,
+  ctrl.payslip
+);
+
+// ═══════════════════════════════════════════════════════════════
+// GET /pdf/payroll/:runId — تقرير مسير رواتب 🆕
+// ═══════════════════════════════════════════════════════════════
+/**
+ * @swagger
+ * /pdf/payroll/{runId}:
+ *   get:
+ *     summary: تحميل تقرير مسير رواتب كامل PDF
+ *     description: |
+ *       تقرير A4 landscape يشمل كل الموظفين في المسير.
+ *       خيار `includeDetails=true` يُظهر تفصيل البدلات والخصومات.
+ *     tags: [PDF]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: runId
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *       - in: query
+ *         name: includeDetails
+ *         schema: { type: string, enum: ['true', 'false'], default: 'false' }
+ *     responses:
+ *       200:
+ *         description: ملف PDF
+ *         content:
+ *           application/pdf:
+ *             schema: { type: string, format: binary }
+ *       404:
+ *         description: المسير غير موجود
+ */
+router.get(
+  '/payroll/:runId',
+  authorize('payroll.view'),
+  [
+    param('runId').isUUID(),
+    query('includeDetails').optional().isIn(['true', 'false']),
+  ],
+  validate,
+  ctrl.payrollReport
+);
 module.exports = router;

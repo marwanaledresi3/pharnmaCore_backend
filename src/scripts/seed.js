@@ -1,5 +1,5 @@
 require('dotenv').config();
-const db = require('../config/db');
+const {pool} = require('../config/pool');
 
 const currencies = [
   { code: 'USD', name: 'US Dollar', symbol: '$' },
@@ -12,7 +12,7 @@ const currencies = [
 (async () => {
   try {
     for (const c of currencies) {
-      await db.query(
+      await pool.query(
         `INSERT INTO currencies (code, name, symbol) VALUES ($1, $2, $3)
          ON CONFLICT (code) DO NOTHING`,
         [c.code, c.name, c.symbol]

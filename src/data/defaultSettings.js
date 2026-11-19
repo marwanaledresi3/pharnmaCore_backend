@@ -182,4 +182,6 @@ module.exports = [
   { key: 'delivery_note_auto_deduct_stock', value: true },
   { key: 'delivery_note_require_signature', value: false },
   { key: 'delivery_note_auto_invoice', value: false },
+
+    ...require('./defaultSettings-hr'),
 ];

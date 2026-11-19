@@ -7,7 +7,18 @@ const branchRoutes = require('./branchRoutes');
 const b2bRoutes = require('./b2bRoutes');
 const postsRoutes = require('./postsRoutes');
 const unitsRoutes = require('./unitsRoutes');  
- 
+
+router.use('/settings', require('./settingsRoutes'));
+router.use('/hr/dashboard', require('./hr/dashboardRoutes'));
+router.use('/departments', require('./departmentRoutes'));
+router.use('/job-titles',  require('./jobTitleRoutes'));
+router.use('/employees',   require('./employeeRoutes'));
+router.use('/attendance',     require('./attendanceRoutes'));
+router.use('/leave-types',    require('./leaveTypeRoutes'));
+router.use('/leave-requests', require('./leaveRequestRoutes'));
+router.use('/leave-balances', require('./leaveBalanceRoutes'));
+router.use('/payroll',     require('./payrollRoutes'));
+
 router.use('/cash-registers',                require('./cashRegistersRoutes'));
 router.use('/goods-receipts', require('./goodsReceiptRoutes'));
 router.use('/delivery-notes', require('./deliveryNoteRoutes'));

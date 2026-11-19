@@ -29,6 +29,9 @@ const VALID_SOURCE_TYPES = [
   'goods_receipt',
   'credit_note',
   'debit_note',
+  'payroll',
+  'depreciation', 'asset_disposal', 'asset_purchase',
+  'custody', 'custody_settlement', 'advance', 'advance_payment',
 ];
 
 class JournalEntry {

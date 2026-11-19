@@ -375,4 +375,86 @@ router.get(
   ctrl.inventoryReport
 );
 
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /reports/hr/export/xlsx
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * @swagger
+ * /reports/hr/export/xlsx:
+ *   post:
+ *     summary: تصدير تقرير HR كـ Excel
+ *     tags: [Reports]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [filename, sheets]
+ *             properties:
+ *               filename: { type: string }
+ *               sheets:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     name: { type: string }
+ *                     headers: { type: array, items: { type: string } }
+ *                     rows: { type: array, items: { type: object } }
+ *     responses:
+ *       200:
+ *         description: ملف xlsx
+ *       400:
+ *         description: بيانات غير صالحة
+ */
+router.post(
+  '/hr/export/xlsx',
+  authorize('reports.export'),
+  ctrl.exportHrXlsx
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /reports/hr/export/pdf
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * @swagger
+ * /reports/hr/export/pdf:
+ *   post:
+ *     summary: تصدير تقرير HR كـ PDF
+ *     tags: [Reports]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [filename, headers, rows]
+ *             properties:
+ *               filename: { type: string }
+ *               title: { type: string }
+ *               subtitle: { type: string }
+ *               headers: { type: array, items: { type: string } }
+ *               rows: { type: array, items: { type: object } }
+ *               summary:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     label: { type: string }
+ *                     value: { type: string }
+ *                     isTotal: { type: boolean }
+ *     responses:
+ *       200:
+ *         description: ملف PDF
+ */
+router.post(
+  '/hr/export/pdf',
+  authorize('reports.export'),
+  ctrl.exportHrPdf
+);
+
 module.exports = router;

@@ -520,7 +520,81 @@ function buildExpensePayLines({
   ];
 }
 
+/**
+ * يبني سطور قيد مسير رواتب
+ *
+ * Dr 512   رواتب وأجور              (gross)
+ * Dr 5240  تأمينات اجتماعية (حصة الشركة)  (employerSocial)
+ * Cr 2130  رواتب مستحقة              (net)
+ * Cr 2131  تأمينات اجتماعية مستحقة   (employeeSocial + employerSocial)
+ * Cr 2132  ضريبة دخل مستحقة          (tax)
+ *
+ * @param {object} params
+ *   - accounts: { '512': id, '5240': id, '2130': id, '2131': id, '2132': id }
+ *   - gross, net, employeeSocial, employerSocial, tax
+ *   - reference
+ * @returns {Array} lines
+ */
+function buildPayrollLines({
+  accounts,
+  gross,
+  net,
+  employeeSocial,
+  employerSocial,
+  tax,
+  reference,
+}) {
+  const lines = [];
 
+  // Dr 512 — إجمالي الرواتب
+  lines.push({
+    account_id: accounts['512'],
+    debit: round2(gross),
+    credit: 0,
+    description: `رواتب — مسير ${reference}`,
+  });
+
+  // Dr 5240 — حصة الشركة في التأمينات
+  if (employerSocial > 0.01) {
+    lines.push({
+      account_id: accounts['5240'],
+      debit: round2(employerSocial),
+      credit: 0,
+      description: `تأمينات — حصة الشركة — ${reference}`,
+    });
+  }
+
+  // Cr 2130 — صافي الرواتب المستحقة
+  lines.push({
+    account_id: accounts['2130'],
+    debit: 0,
+    credit: round2(net),
+    description: `صافي رواتب مستحقة — ${reference}`,
+  });
+
+  // Cr 2131 — التأمينات المستحقة (حصة الموظف + حصة الشركة)
+  const socialTotal = round2(employeeSocial + employerSocial);
+  if (socialTotal > 0.01) {
+    lines.push({
+      account_id: accounts['2131'],
+      debit: 0,
+      credit: socialTotal,
+      description: `تأمينات مستحقة — ${reference}`,
+    });
+  }
+
+  // Cr 2132 — ضريبة الدخل المستحقة
+  if (tax > 0.01) {
+    lines.push({
+      account_id: accounts['2132'],
+      debit: 0,
+      credit: round2(tax),
+      description: `ضريبة دخل مستحقة — ${reference}`,
+    });
+  }
+
+  return lines;
+}
 module.exports = {
   round2,
   assertBalanced,
@@ -534,4 +608,5 @@ module.exports = {
   buildCreditApplyLines,
  buildExpenseLines,
   buildExpensePayLines,
+  buildPayrollLines
 };

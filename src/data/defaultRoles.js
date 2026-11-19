@@ -1,14 +1,27 @@
+// data/defaultRoles.js
 /**
  * الأدوار الافتراضية لكل شركة
  * permissions: قائمة أكواد الصلاحيات المتطابقة مع seed-permissions.js
+ *
+ * ⚠️ عند تعديل دور: شغّل seed-roles.js أو seed-company.js --all
+ * ⚠️ الأدوار is_system: true لا يمكن حذفها من الواجهة
+ *
+ * المجموع: 7 أدوار
  */
 module.exports = [
+  // ═══════════════════════════════════════════════════════════
+  // 1) Owner — كل الصلاحيات
+  // ═══════════════════════════════════════════════════════════
   {
     name: 'Owner',
     description: 'Company owner with full access',
     is_system: true,
-    permissions: '*', // كل الصلاحيات
+    permissions: '*',
   },
+
+  // ═══════════════════════════════════════════════════════════
+  // 2) Manager — مدير عام
+  // ═══════════════════════════════════════════════════════════
   {
     name: 'Manager',
     description: 'General manager — full operational access',
@@ -45,11 +58,11 @@ module.exports = [
       'stock_transfers.view', 'stock_transfers.create', 'stock_transfers.confirm', 'stock_transfers.cancel',
       'stock_adjustments.view', 'stock_adjustments.create', 'stock_adjustments.confirm', 'stock_adjustments.cancel',
 
-      // الشركاء (العملاء والموردون)
+      // الشركاء
       'customers.view', 'customers.create', 'customers.update', 'customers.delete',
       'suppliers.view', 'suppliers.create', 'suppliers.update', 'suppliers.delete',
 
-      // المبيعات والمشتريات والعمليات اللوجستية
+      // المبيعات والمشتريات
       'sales_orders.view', 'sales_orders.create', 'sales_orders.update', 'sales_orders.confirm', 'sales_orders.cancel',
       'delivery_notes.view', 'delivery_notes.create', 'delivery_notes.dispatch', 'delivery_notes.deliver', 'delivery_notes.invoice', 'delivery_notes.cancel',
       'purchase_orders.view', 'purchase_orders.create', 'purchase_orders.update', 'purchase_orders.approve', 'purchase_orders.reject', 'purchase_orders.confirm', 'purchase_orders.cancel',
@@ -58,14 +71,29 @@ module.exports = [
       'returns.view', 'returns.create', 'returns.confirm', 'returns.cancel',
       'payments.view', 'payments.create', 'payments.update', 'payments.refund',
 
-      // التقارير والمستندات وشبكة B2B والإشعارات
+      // التقارير والمستندات و B2B
       'documents.view',
       'reports.view', 'reports.view_financial', 'reports.view_inventory', 'reports.view_sales', 'reports.view_purchases', 'reports.export',
       'b2b.view', 'b2b.connect', 'b2b.approve', 'b2b.post',
       'posts.view', 'posts.create', 'posts.delete',
       'notifications.view', 'notifications.mark', 'notifications.delete',
+
+      // ⬇️ HR (Manager — كل شيء عدا حذف الموظفين)
+      'departments.view', 'departments.create', 'departments.update', 'departments.delete',
+      'job_titles.view', 'job_titles.create', 'job_titles.update', 'job_titles.delete',
+      'employees.view', 'employees.create', 'employees.update',
+      'attendance.view', 'attendance.checkin', 'attendance.checkout', 'attendance.upsert', 'attendance.delete',
+      'leave_types.view', 'leave_types.create', 'leave_types.update', 'leave_types.delete',
+      'leave_requests.view', 'leave_requests.create', 'leave_requests.approve', 'leave_requests.reject', 'leave_requests.cancel', 'leave_requests.delete',
+      'leave_balances.view', 'leave_balances.create', 'leave_balances.update',
+      'payroll.view', 'payroll.create', 'payroll.post',
+      'payroll_items.update', 'payroll_items.bonus',
     ],
   },
+
+  // ═══════════════════════════════════════════════════════════
+  // 3) Accountant — محاسب (موجود + إضافة عرض HR)
+  // ═══════════════════════════════════════════════════════════
   {
     name: 'Accountant',
     description: 'يدير الحسابات والفواتير والمدفوعات والمصروفات',
@@ -90,8 +118,68 @@ module.exports = [
       'documents.view',
       'reports.view', 'reports.view_financial', 'reports.view_sales', 'reports.view_purchases', 'reports.export',
       'notifications.view', 'notifications.mark',
+
+      // ⬇️ HR (Accountant — عرض فقط + رواتب)
+      'employees.view',
+      'payroll.view',           // لعرض كشوف الرواتب
+      'payroll_items.update',   // لتعديل البنود قبل الترحيل (اختياري)
+      'payroll_items.bonus',
     ],
   },
+
+  // ═══════════════════════════════════════════════════════════
+  // 4) HR Manager — 🆕 مدير موارد بشرية
+  // ═══════════════════════════════════════════════════════════
+  {
+    name: 'HR Manager',
+    description: 'مدير الموارد البشرية — إدارة كاملة للموظفين والحضور والإجازات والرواتب',
+    is_system: false,
+    permissions: [
+      // عرض الشركة والإعدادات
+      'companies.view',
+      'branches.view',
+      'settings.view',
+      'documents.view',
+      'notifications.view', 'notifications.mark',
+      'reports.view', 'reports.view_financial', 'reports.export',
+
+      // ⬇️ HR — إدارة كاملة
+      'departments.view', 'departments.create', 'departments.update', 'departments.delete',
+      'job_titles.view', 'job_titles.create', 'job_titles.update', 'job_titles.delete',
+      'employees.view', 'employees.create', 'employees.update', 'employees.delete',
+      'attendance.view', 'attendance.checkin', 'attendance.checkout', 'attendance.upsert', 'attendance.delete',
+      'leave_types.view', 'leave_types.create', 'leave_types.update', 'leave_types.delete',
+      'leave_requests.view', 'leave_requests.create', 'leave_requests.approve', 'leave_requests.reject', 'leave_requests.cancel', 'leave_requests.delete',
+      'leave_balances.view', 'leave_balances.create', 'leave_balances.update', 'leave_balances.delete',
+      'payroll.view', 'payroll.create', 'payroll.post', 'payroll.delete',
+      'payroll_items.update', 'payroll_items.bonus', 'payroll_items.delete',
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════
+  // 5) Employee — 🆕 موظف (ذاتي فقط)
+  // ═══════════════════════════════════════════════════════════
+  {
+    name: 'Employee',
+    description: 'موظف — تسجيل حضوره وطلب إجازته وعرض قسيمة راتبه',
+    is_system: false,
+    permissions: [
+      // ⬇️ HR — ذاتي فقط (انظر ملاحظة أدناه)
+      'attendance.checkin',      // تسجيل حضوره
+      'attendance.checkout',     // تسجيل انصرافه
+      'attendance.view',         // عرض سجلاته (يُقيَّد بـ employee_id في الـ controller)
+      'leave_requests.create',   // طلب إجازة
+      'leave_requests.view',     // عرض طلباته (يُقيَّد بـ employee_id)
+      'leave_requests.cancel',   // إلغاء طلباته (يُقيَّد بـ employee_id)
+      'leave_balances.view',     // عرض رصيده (يُقيَّد بـ employee_id)
+      'payroll.view',            // عرض قسيمة راتبه (يُقيَّد)
+      'notifications.view', 'notifications.mark',
+    ],
+  },
+
+  // ═══════════════════════════════════════════════════════════
+  // 6) Salesperson — بائع (بدون HR)
+  // ═══════════════════════════════════════════════════════════
   {
     name: 'Salesperson',
     description: 'يدير العملاء وأوامر البيع ومذكرات التسليم',
@@ -117,6 +205,10 @@ module.exports = [
       'notifications.view', 'notifications.mark',
     ],
   },
+
+  // ═══════════════════════════════════════════════════════════
+  // 7) Purchasing — مشتريات (بدون HR)
+  // ═══════════════════════════════════════════════════════════
   {
     name: 'Purchasing',
     description: 'يدير الموردين وأوامر الشراء وأذون الاستلام',
@@ -141,9 +233,13 @@ module.exports = [
       'notifications.view', 'notifications.mark',
     ],
   },
+
+  // ═══════════════════════════════════════════════════════════
+  // 8) Warehouse — مستودع (بدون HR)
+  // ═══════════════════════════════════════════════════════════
   {
     name: 'Warehouse',
-    description: 'يدير المخزون والمستودعات والتحويلات والتسويات والاستلام والتسليم',
+    description: 'يدير المخزون والمستودعات والتحويلات والتسويات',
     is_system: false,
     permissions: [
       'products.view',

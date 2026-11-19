@@ -17,6 +17,10 @@ const { generateGoodsReceipt } = require('./templates/goodsReceipt');
 const { generateStockTransfer } = require('./templates/stockTransfer');
 const { generateStockAdjustment } = require('./templates/stockAdjustment');
 
+const { generateHrReport } = require('./templates/hrReport');
+const { generatePayslip } = require('./templates/payslip');
+const { generatePayrollReport } = require('./templates/payrollReport');
+
 module.exports = {
   generateVoucher,
   generateInvoice,
@@ -34,4 +38,8 @@ module.exports = {
   goodsReceipt: generateGoodsReceipt,
   stockTransfer: generateStockTransfer,
   stockAdjustment: generateStockAdjustment,
+
+  hrReport: generateHrReport,
+  payslip: generatePayslip,
+  payrollReport: generatePayrollReport,
 };
