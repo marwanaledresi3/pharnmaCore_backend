@@ -184,4 +184,5 @@ module.exports = [
   { key: 'delivery_note_auto_invoice', value: false },
 
     ...require('./defaultSettings-hr'),
+    ...require('./defaultSettings-fa'),
 ];

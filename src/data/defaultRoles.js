@@ -88,6 +88,16 @@ module.exports = [
       'leave_balances.view', 'leave_balances.create', 'leave_balances.update',
       'payroll.view', 'payroll.create', 'payroll.post',
       'payroll_items.update', 'payroll_items.bonus',
+
+      // الأصول الثابتة
+      'asset_categories.view', 'asset_categories.create', 'asset_categories.update',
+      'fixed_assets.view', 'fixed_assets.create', 'fixed_assets.update', 'fixed_assets.transfer',
+      'asset_depreciation.view', 'asset_depreciation.run',
+      'asset_maintenance.view', 'asset_maintenance.create',
+      'asset_disposals.view', 'asset_disposals.create',
+
+      'custody.read', 'custody.create', 'custody.settle',
+      'advances.read', 'advances.create', 'advances.approve', 'advances.pay',
     ],
   },
 
@@ -124,6 +134,15 @@ module.exports = [
       'payroll.view',           // لعرض كشوف الرواتب
       'payroll_items.update',   // لتعديل البنود قبل الترحيل (اختياري)
       'payroll_items.bonus',
+
+      'asset_categories.view',
+      'fixed_assets.view', 'fixed_assets.create', 'fixed_assets.update',
+      'asset_depreciation.view', 'asset_depreciation.run',
+      'asset_maintenance.view', 'asset_maintenance.create',
+      'asset_disposals.view', 'asset_disposals.create',
+
+      'custody.read', 'custody.settle',
+      'advances.read', 'advances.approve', 'advances.pay',
     ],
   },
 
@@ -153,6 +172,9 @@ module.exports = [
       'leave_balances.view', 'leave_balances.create', 'leave_balances.update', 'leave_balances.delete',
       'payroll.view', 'payroll.create', 'payroll.post', 'payroll.delete',
       'payroll_items.update', 'payroll_items.bonus', 'payroll_items.delete',
+
+      'custody.read', 'custody.create', 'custody.settle',
+      'advances.read', 'advances.create', 'advances.approve', 'advances.pay',
     ],
   },
 
@@ -174,6 +196,9 @@ module.exports = [
       'leave_balances.view',     // عرض رصيده (يُقيَّد بـ employee_id)
       'payroll.view',            // عرض قسيمة راتبه (يُقيَّد)
       'notifications.view', 'notifications.mark',
+
+      'custody.read',
+      'advances.read', 'advances.create',
     ],
   },
 
@@ -254,6 +279,10 @@ module.exports = [
       'documents.view',
       'reports.view', 'reports.view_inventory',
       'notifications.view', 'notifications.mark',
+
+      'asset_categories.view',
+      'fixed_assets.view', 'fixed_assets.transfer',
+      'asset_maintenance.view', 'asset_maintenance.create',
     ],
   },
 ];

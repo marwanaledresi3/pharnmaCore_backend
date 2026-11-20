@@ -216,6 +216,22 @@ const SETTINGS_SCHEMA = {
   hr_reports_attendance_include_absent:    { type: 'boolean' },
   hr_reports_leave_include_cancelled:      { type: 'boolean' },
   hr_reports_payroll_include_drafts:       { type: 'boolean' },
+
+  // ── Fixed Assets ──
+  fa_asset_number_prefix:         { type: 'string', maxLength: 10 },
+  fa_asset_number_padding:        { type: 'number', min: 1, max: 10 },
+  fa_depreciation_number_prefix:  { type: 'string', maxLength: 10 },
+  fa_depreciation_number_padding: { type: 'number', min: 1, max: 10 },
+  fa_disposal_number_prefix:      { type: 'string', maxLength: 10 },
+  fa_disposal_number_padding:     { type: 'number', min: 1, max: 10 },
+  fa_auto_post_disposal:        { type: 'boolean' },
+
+  // ── Fixed Assets ──
+  fa_enabled:                     { type: 'boolean' },
+  numbering_asset_prefix:         { type: 'string', maxLength: 10 },
+  numbering_asset_padding:        { type: 'number', min: 1, max: 10 },
+  fa_default_depreciation_method: { type: 'string', enum: ['straight_line', 'declining_balance', 'units_of_production'] },
+  fa_auto_post_depreciation:      { type: 'boolean' },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════

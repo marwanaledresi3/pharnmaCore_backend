@@ -44,6 +44,7 @@ const JOBS = [
   { name: 'leaveBalanceResetJob',   module: require('./leaveBalanceResetJob'),   enabled: envBool('ENABLE_LEAVE_BALANCE_RESET_JOB', true) },
   { name: 'contractExpiryJob',      module: require('./contractExpiryJob'),      enabled: envBool('ENABLE_CONTRACT_EXPIRY_JOB', true) },
   { name: 'attendanceReminderJob',  module: require('./attendanceReminderJob'),  enabled: envBool('ENABLE_ATTENDANCE_REMINDER_JOB', true) },  // 🆕
+  { name: 'assetDepreciationJob', module: require('./assetDepreciationJob'), enabled: envBool('ENABLE_ASSET_DEPRECIATION_JOB', true) },
 ];
 
 const startAll = async () => {   // ⬅️ يجب أن تصبح async

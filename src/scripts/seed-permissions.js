@@ -353,7 +353,11 @@ const PERMISSIONS = [
   { code: 'cash_transfers.view',   name: 'عرض التحويلات النقدية',  module: 'cash_transfers' },
   { code: 'cash_transfers.create', name: 'إنشاء تحويل نقدي',       module: 'cash_transfers' },
   { code: 'cash_transfers.cancel', name: 'إلغاء تحويل نقدي',       module: 'cash_transfers' },
-  ...require('../data/hrPermissions'),];
+  ...require('../data/hrPermissions'),
+  ...require('../data/fixedAssetsPermissions'),
+  ...require('../data/custodyPermissions'),
+];
+  
 
 // ═══════════════════════════════════════════════════════════════
 // Helpers

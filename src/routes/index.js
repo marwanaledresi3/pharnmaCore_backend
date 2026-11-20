@@ -8,6 +8,10 @@ const b2bRoutes = require('./b2bRoutes');
 const postsRoutes = require('./postsRoutes');
 const unitsRoutes = require('./unitsRoutes');  
 
+const custodyRoutes = require('./custodyRoutes');
+router.use('/custodies', custodyRoutes);
+router.use('/fixed-assets', require('./fixedAssetRoutes'));
+
 router.use('/settings', require('./settingsRoutes'));
 router.use('/hr/dashboard', require('./hr/dashboardRoutes'));
 router.use('/departments', require('./departmentRoutes'));

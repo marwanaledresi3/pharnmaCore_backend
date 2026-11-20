@@ -22,6 +22,20 @@ module.exports = [
   { code: '1120', name: 'الذمم المدينة (العملاء)',     type: 'asset',     parent: '1100' },
   { code: '1130', name: 'المخزون',                   type: 'asset',     parent: '1100' },
   { code: '1140', name: 'مصروفات مدفوعة مقدماً',       type: 'asset',     parent: '1100' },
+
+  { code: '1200', name: 'الأصول الثابتة',                  type: 'asset',   parent: '1000' },
+  { code: '1210', name: 'الأراضي والمباني',                type: 'asset',   parent: '1200' },
+  { code: '1211', name: 'الآلات والمعدات',                type: 'asset',   parent: '1200' },
+  { code: '1212', name: 'السيارات ووسائل النقل',          type: 'asset',   parent: '1200' },
+  { code: '1213', name: 'الأثاث والتجهيزات المكتبية',     type: 'asset',   parent: '1200' },
+  { code: '1214', name: 'أجهزة الحاسوب والبرمجيات',       type: 'asset',   parent: '1200' },
+  { code: '1220', name: 'مجمع الإهلاك',                    type: 'asset',   parent: '1200' },
+  { code: '1221', name: 'مجمع إهلاك الأصول الثابتة',      type: 'asset',   parent: '1220' },
+
+  { code: '4120', name: 'أرباح بيع الأصول الثابتة',        type: 'revenue', parent: '4100' },
+
+  { code: '5181', name: 'خسائر بيع/استبعاد الأصول الثابتة', type: 'expense', parent: '5000' },
+  { code: '5250', name: 'مصروف إهلاك الأصول الثابتة',     type: 'expense', parent: '5000' },
   // ⬇️ HR: ذمم الموظفين
   { code: '1150', name: 'ذمم الموظفين - عهد',          type: 'asset',     parent: '1100' },
   { code: '1151', name: 'ذمم الموظفين - سلف',          type: 'asset',     parent: '1100' },
